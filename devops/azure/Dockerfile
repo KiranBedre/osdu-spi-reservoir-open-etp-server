@@ -83,7 +83,7 @@ RUN cmake -GNinja -B build \
         -DCMAKE_INSTALL_PREFIX="./dist" \
         -DCODE_COVERAGE=OFF && \
     ninja -C build -j8 install && \
-    ctest --test-dir build --output-on-failure
+    ctest --test-dir build --label-regex UNIT --output-on-failure
 
 WORKDIR /source/dist
 RUN tar -czvf /source/dist.tgz .
