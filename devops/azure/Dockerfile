@@ -57,10 +57,9 @@ RUN tdnf upgrade -y && \
 ENV VCPKG_ROOT="/vcpkg"
 ARG VCPKG_VERSION="ef7dbf94b9198bc58f45951adcf1f041fcbc5ea0"
 
-RUN git init ${VCPKG_ROOT} && \
-    git -C ${VCPKG_ROOT} remote add origin https://github.com/microsoft/vcpkg.git && \
-    git -C ${VCPKG_ROOT} fetch --depth 1 origin ${VCPKG_VERSION} && \
-    git -C ${VCPKG_ROOT} checkout --detach FETCH_HEAD
+RUN git clone --filter=blob:none --single-branch --no-checkout \
+        https://github.com/microsoft/vcpkg.git ${VCPKG_ROOT} && \
+    git -C ${VCPKG_ROOT} checkout --detach ${VCPKG_VERSION}
 
 WORKDIR ${VCPKG_ROOT}
 RUN ./bootstrap-vcpkg.sh
