@@ -1,0 +1,40 @@
+################################################################################
+# providers directory
+set(oes_providers_HEADERS
+    export.h
+    core/BaseTokenClient.h
+    core/BearerTokenProvider.h
+    core/EnvironmentResolver.h
+    core/SecretProviderFactory.h
+    core/SecretsProvider.h
+    core/TokenProviderFactory.h
+    core/ProvidersConfig.h
+    core/OAuthTokenClient.h
+    core/utils.h
+    azure/BearerTokenProviderAzure.h
+    azure/MsiCredentialProvider.h
+    azure/MsiCustomEndpointCredential.h
+    azure/OAuthTokenSvcClient.h
+    azure/SecretsProviderAzure.h
+    azure/Utils.h
+    cimpl/BearerTokenProviderCImpl.h
+    cimpl/SecretsProviderCImpl.h
+)
+
+set(oes_providers_SOURCES
+    core/EnvironmentResolver.cpp
+    core/SecretProviderFactory.cpp
+    core/TokenProviderFactory.cpp
+    core/ProvidersConfig.cpp
+    core/SecretsProvider.cpp
+    core/OAuthTokenClient.cpp
+    core/utils.cpp
+    azure/BearerTokenProviderAzure.cpp
+    azure/MsiCredentialProvider.cpp
+    azure/MsiCustomEndpointCredential.cpp
+    azure/OAuthTokenSvcClient.cpp
+    azure/SecretsProviderAzure.cpp
+    azure/Utils.cpp
+    cimpl/BearerTokenProviderCImpl.cpp
+    cimpl/SecretsProviderCImpl.cpp
+)

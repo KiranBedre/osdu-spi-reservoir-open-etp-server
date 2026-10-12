@@ -1,0 +1,58 @@
+{{- $namespace := .Release.Namespace }}
+{{- $pullPolicy := .Values.pullPolicy -}}
+{{- $version := .Chart.AppVersion -}}
+{{- $useJobHelmHooks:= .Values.postgres.useJobHelmHooks -}}
+{{- $release := .Release.Name }}
+{{- $postgresSecretConn := include "postgres.connectionString" (dict "Release" .Release "Values" .Values) }}
+{{- range .Values.configuration }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  {{- $annotations := dict }}
+  {{- if $useJobHelmHooks }}
+    {{- $_ := set $annotations "helm.sh/hook" "post-install,post-upgrade" }}
+    {{- $_ := set $annotations "helm.sh/hook-weight" "2" }}
+    {{- $_ := set $annotations "helm.sh/hook-delete-policy" "before-hook-creation,hook-succeeded" }}
+  {{- end }}
+  {{- with $annotations := merge $annotations  }}
+  annotations:
+  {{- $annotations | toYaml | nindent 4 }}
+  {{- end }}
+    proxy.istio.io/config: '{ "holdApplicationUntilProxyStarts": true }'
+  labels:
+{{ include "reservoir-ddms.commonLabels" . | indent 4}}
+  name: {{ .service }}-job
+  namespace: {{ $namespace }}
+spec:
+  template:
+    metadata:
+      annotations:
+{{ include "reservoir-ddms.metricAnnotations" . | indent 8 }}
+      labels:
+        aadpodidbinding: osdu-identity
+{{ include "reservoir-ddms.commonLabels" . | indent 8 }}
+    spec:
+      restartPolicy: Never
+      containers:
+      - command:
+        - sh
+        - -c
+        - |
+          trap "wget -q --post-data='' -S -O /dev/null http://127.0.0.1:15020/quitquitquit" EXIT
+          sleep 10
+          openETPServer server -h || echo '[ERROR] to init openETPServer'
+          x=$(echo $?); wget --post-data='' -S http://127.0.0.1:15020/quitquitquit && exit $x
+        {{- if hasPrefix "<azure_acr>/" .repository }}
+        {{- $repo := .repository | replace "<azure_acr>/" "msosdu.azurecr.io/" }}
+        image: {{ $repo }}:{{ .tag | default $version }}
+        {{- else }}
+        image: {{ .repository }}:{{ .tag | default $version }}
+        {{- end }}
+        name: reservoir-pre-install
+        {{- if $postgresSecretConn }}
+        env:
+          {{- $postgresSecretConn | nindent 8 -}}
+        {{- end }}    
+---
+{{- end }}

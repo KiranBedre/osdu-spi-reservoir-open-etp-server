@@ -1,0 +1,128 @@
+#  Copyright © Microsoft Corporation
+#  Copyright © EPAM Systems
+#
+#  Licensed under the Apache License, Version 2.0 (the "License");
+#  you may not use this file except in compliance with the License.
+#  You may obtain a copy of the License at
+#
+#       http://www.apache.org/licenses/LICENSE-2.0
+#
+#  Unless required by applicable law or agreed to in writing, software
+#  distributed under the License is distributed on an "AS IS" BASIS,
+#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#  See the License for the specific language governing permissions and
+#  limitations under the License.
+# Use original file: https://community.opengroup.org/osdu/platform/deployment-and-operations/helm-charts-azure/-/blob/master/osdu-ddms/README.md
+# WARN: EPAM confidential not share these value
+
+global:
+  replicaCount: 1
+  nodepool: services
+  isAutoscalingEnabled: false
+
+################################################################################
+# Specify the azure environment specific values
+azure:
+#  tenant: <azure_tenant>
+#  subscription: <azure_subscription>
+#  resourcegroup: <azure_resourcegroup>
+#  identity: <azure_identity>
+#  identity_id: <azure_identity_id>
+#  keyvault: <azure_keyvault>
+#  appid: <azure_appid>
+  corsEnabled: false
+  createEnvoyFilter: true
+  suthEnvoyFilterEnabled: false
+  oidAuthEnabled: false # set this to true if you want to use oid instead of unique_name and upn
+
+################################################################################
+# Specify the Ingress Settings
+#
+ingress:
+  enabled: true
+
+  extraAnnotations:
+    kubernetes.io/ingress.class: azure/application-gateway
+    appgw.ingress.kubernetes.io/request-timeout: "300"
+    appgw.ingress.kubernetes.io/connection-draining: "true"
+    appgw.ingress.kubernetes.io/connection-draining-timeout: "30"
+    appgw.ingress.kubernetes.io/ssl-redirect: "false"
+    appgw.ingress.kubernetes.io/backend-path-prefix: "/"
+    cert-manager.io/cluster-issuer: letsencrypt
+    cert-manager.io/acme-challenge-type: http01
+
+  tlsSecret: osdu-certificate
+  hosts:
+    host: <ingress_dns>
+
+################################################################################
+# Specify the Pod Identity
+#
+identity:
+  name: osdu-identity
+
+
+################################################################################
+# Specify the Service Settings
+#
+service:
+  type: ClusterIP
+  port: 9002
+  target: 9002
+
+
+################################################################################
+# Specify the Config Map
+#
+configMap: reservoir-svc-config
+
+################################################################################
+# Specify the OSDU Services to Load
+#
+configuration:
+
+  ########################
+  ##  RESERVOIR DDMs
+  #
+  - service: oetp
+    probe:
+      enabled: true
+    repository: <azure_acr>/oetp-server
+    tag: v0.14.x
+    keyvault: true
+    pathPrefix: /api/reservoir-ddms-etp/v2
+    auth:
+      disable:
+        - "/"
+        - "*/.well-known/etp-server-capabilities"
+    env:
+    - name: SERVICE_NAME
+      value: oetp-server
+    # In case of different KEYVAULT_URL config map
+    # - name: KEYVAULT_URL
+    #   config:
+    #     name: osdu-svc-config
+    #     key: ENV_KEYVAULT
+
+################################################################################
+# Specify the Job configurations
+#
+postgres:
+  dbName: postkv
+  useJobHelmHooks: true
+  partitionMode: osdu # osdu|single
+  # If partition mode is single, specify postgres secret name:
+  # SecretName should be libpq formatted: "host=<host> port=<> dbname=<dbName> user=postgres@<db> password=<password> sslmode=require"
+  # It can be either kvSecretName or secretName but not both in single mode
+  #kubernetesSecret:
+  #  name: mysecret
+  #  key: postgres-connection
+  #kvSecretName: dp-reservoir-conn
+
+################################################################################
+# If istio enabled
+#
+#istioDnsHost: <your dns host>
+
+# If core services are not in osdu-azure namespace
+#coreServicesNamespace: osdu-azure

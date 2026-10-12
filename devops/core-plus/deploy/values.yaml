@@ -1,0 +1,53 @@
+global:
+  domain: ""
+  onPremEnabled: false
+  limitsEnabled: true
+  tier: ""
+  autoscaling: true
+
+data:
+  #Configmaps
+  entitlementsUrl: "http://entitlements/api/entitlements/v2"
+  partitionUrl: "http://partition/api/partition/v1"
+  storageUrl: "http://storage/api/storage/v2"
+  cloudProvider: "cimpl"
+  groupId: "group"
+  rdmsDataConnectivityMode: "osdu"
+  rdmsDataPartitionMode: "multiple"
+  #Deployments
+  requestsCpu: "100m"
+  requestsMemory: "0.2G"
+  limitsCpu: "1"
+  limitsMemory: "1G"
+  cloudSqlProxyVersion: "1.32.0"
+  sqlConnectionString: ""
+  image: ""
+  imagePullPolicy: "IfNotPresent"
+  serviceAccountName: "oetp-server"
+
+conf:
+  appName: "oetp-server"
+  configmap: "oetp-server-config"
+  openEtpServerSecretName: "oetp-server-secret"
+  replicas: 3
+
+hpa:
+  minReplicas: 6
+  maxReplicas: 15
+  targetType: "AverageValue" #Could be AverageValue or Value
+  targetValue: 16 #8 rps
+  behaviorScaleUpStabilizationWindowSeconds: 10
+  behaviorScaleUpPoliciesValue: 50
+  behaviorScaleUpPoliciesPeriodSeconds: 15
+  behaviorScaleDownStabilizationWindowSeconds: 60
+  behaviorScaleDownPoliciesValue: 25
+  behaviorScaleDownPoliciesPeriodSeconds: 60
+
+limits:
+  maxTokens: 12
+  tokensPerFill: 12
+  fillInterval: "1s"
+
+keycloak:
+  clientId: "integration-tester"
+  clientSecret: ""

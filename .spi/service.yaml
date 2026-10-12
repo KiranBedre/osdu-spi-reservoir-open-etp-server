@@ -1,0 +1,31 @@
+schemaVersion: 4
+service:
+  name: open-etp
+  archetype: cpp-cmake-azure
+  sourcePath: .
+  image:
+    context: .
+    dockerfile: devops/azure/Dockerfile
+tests:
+  acceptance:
+    type: script
+    path: devops/azure/tasks
+    entrypoint: etp-ssl-client-integration-tests.sh
+    reportPaths:
+      - results/open-etp.xml
+    requires:
+      loads: []
+      groups:
+        - service.reservoir-dms.owners
+    dependencies:
+      - partition
+      - entitlements
+      - legal
+      - storage
+    timeoutMinutes: 90
+    bindings:
+      RDDMS_URL: { source: gateway, suffix: /api/reservoir-ddms-etp/v2/ }
+      DATA_PARTITION_ID: { source: partition }
+      ACCESS_TOKEN: { source: token }
+      LEGAL_TAG: { source: legalTag }
+      DOMAIN: { source: domain }

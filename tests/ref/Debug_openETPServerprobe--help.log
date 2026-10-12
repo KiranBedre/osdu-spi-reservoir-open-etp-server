@@ -1,0 +1,42 @@
+Info: 
+Usage: openETPServer [global-options] probe --info -S URL
+Usage: openETPServer [global-options] probe --ping -S URL [auth-options]
+
+Actions:
+  -h [ --help ]                        Display this information
+  --info                               Get ETP 1.2 server capabilities
+  --ping                               Connect and ping ETP 1.2 server
+  --osdu                               Get OSDU data platform support info
+
+Connect Options:
+  -S [ --server-url ] arg              ETP 1.2 server URL
+  --etp-trace arg                      Trace ETP messages to file
+                                       Filename inferred if empty or directory
+  --timeout arg (=10s,10s)             ETP timeouts for CONNECT and GET/PUT 
+                                       requests
+  -M [ --max-msg-size ] arg (=1MB)     Maximum WebSocket message size(s) in 
+                                       bytes
+  -B [ --max-batch-size ] arg (=100)   Maximum parts per multi-part message
+  -Q [ --msg-queue-depth ] arg (=500)  Deprecated: Maximum concurrent 
+                                       (in-flight) messages
+  --acknowledge                        Set Acknowledge flag on all ETP requests
+  -Z [ --compress ] [=arg(=gzip)]      Set Compress-Body flag on all ETP 
+                                       requests
+                                       Specify compressor(s) (Default: gzip)
+  --shun-protocols arg                 Force client to ignore those protocols
+
+Authentication Options:
+  -A [ --auth ] arg (=auto)            Authentication method: 'auto, 'none', 
+                                       'basic', 'bearer'.
+  -u [ --username ] arg                User's name to authenticate with.
+  -p [ --password ] arg                User's password to authenticate with.
+  -T [ --jwt-token ] arg               Explicit JWT token. Used as-is.
+  -k [ --jwt-secret ] arg              JWT Signing Key. Uses Basic 
+                                       Authentication if omitted.
+  --no-http-headers                    Use URL for AuthN. Emulates 
+                                       Browser-based clients.
+
+OSDU Partition Options:
+  -P [ --data-partition-id ] arg       OSDU data partition name.
+
+Info: openETPServer: done.

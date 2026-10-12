@@ -1,0 +1,62 @@
+#  Copyright © Microsoft Corporation
+#
+#  Licensed under the Apache License, Version 2.0 (the "License");
+#  you may not use this file except in compliance with the License.
+#  You may obtain a copy of the License at
+#
+#       http://www.apache.org/licenses/LICENSE-2.0
+#
+#  Unless required by applicable law or agreed to in writing, software
+#  distributed under the License is distributed on an "AS IS" BASIS,
+#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#  See the License for the specific language governing permissions and
+#  limitations under the License.
+
+# Update accordingly in https://community.opengroup.org/osdu/platform/deployment-and-operations/helm-charts-azure/-/blob/master/osdu-ddms/standard-ddms/reservoir.osdu.values.yaml
+#ingress:
+#  dns: <dns>
+#  Deprecated appgw in favor of istio gw
+#  appGateway:
+#    issuer: letsencrypt-prod-dns
+#    enableKeyvaultCert: false
+#  annotations:
+#    appgw.ingress.kubernetes.io/backend-path-prefix: "/"
+
+deployment:
+  replicaCount: 1
+
+configuration:
+  ####################
+  # RESERVOIR SERVER #
+  ####################
+  - service: oetp
+    container:
+      image: open-etp-server
+      containerPort: 9002
+    path: "/api/reservoir-ddms-etp/v2/"
+    pathRewrite: "/"
+    podAnnotations:
+      prometheus.io/path: /metrics
+      prometheus.io/port: "9002"
+      prometheus.io/scrape: "true"
+    # Using entitlements
+    command: "[\"openETPServer\", \"server\", \"--start\" , \"--log_level\", \"info\", \"-M\", \"2GB\", \"-Q\", \"1000\", \"--authN\", \"none\", \"--authZ\", \"delegate=\"]"
+    probe:
+      readiness:
+        path: /health
+    auth:
+      disable:
+        - "*/.well-known/etp-server-capabilities"
+        - "*/metrics"
+    config:
+      CLOUD_PROVIDER: "az"
+      AZURE_ENABLE_MSI: "true"
+      RDMS_DATA_PARTITION_MODE: "multiple"
+      RDMS_DATA_CONNECTIVITY_MODE: "osdu"
+      KEYVAULT_URL: "https://{{ .Values.azure.keyvault.name }}.vault.azure.net/"
+      # In glab all services are installed in osdu ns instead of osdu-azure
+      # Common helm-charts-azure core install is in osdu-azure ns
+      PARTITION_URL: http://partition.osdu/api/partition/v1
+      STORAGE_URL: http://storage.osdu/api/storage/v2
+      ENTITLEMENTS_URL: http://entitlements.osdu/api/entitlements/v2
+      DOMAIN_NAME: "contoso.com"

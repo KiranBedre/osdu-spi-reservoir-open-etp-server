@@ -1,0 +1,75 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Values.conf.appName | quote }}
+  namespace: {{ .Release.Namespace | quote }}
+  labels:
+    type: ddms
+    source: "c"
+spec:
+  replicas: {{ .Values.conf.replicas }}
+  selector:
+    matchLabels:
+      app: {{ .Values.conf.appName | quote }}
+  template:
+    metadata:
+      labels:
+        app: {{ .Values.conf.appName | quote }}
+      annotations:
+        rollme: {{ randAlphaNum 5 | quote }}
+    spec:
+      containers:
+      - image: {{ .Values.data.image | quote }}
+        imagePullPolicy: {{ .Values.data.imagePullPolicy | quote }}
+        name: {{ .Values.conf.appName | quote }}
+        envFrom:
+        - configMapRef:
+            name: {{ .Values.conf.configmap | quote }}
+        - secretRef:
+            name: {{ .Values.conf.openEtpServerSecretName | quote }}
+        securityContext:
+          allowPrivilegeEscalation: false
+          runAsNonRoot: true
+        livenessProbe:
+          failureThreshold: 3
+          httpGet:
+            path: /health
+            port: 9002
+          initialDelaySeconds: 60
+          periodSeconds: 20
+          successThreshold: 1
+          timeoutSeconds: 3
+        readinessProbe:
+          failureThreshold: 3
+          httpGet:
+            path: /health
+            port: 9002
+          initialDelaySeconds: 60
+          periodSeconds: 20
+          successThreshold: 1
+          timeoutSeconds: 3
+        resources:
+          requests:
+            cpu: {{ .Values.data.requestsCpu | quote }}
+            memory: {{ .Values.data.requestsMemory | quote }}
+          {{- if .Values.global.limitsEnabled }}
+          limits:
+            cpu: {{ .Values.data.limitsCpu | quote }}
+            memory: {{ .Values.data.limitsMemory | quote }}
+          {{- end }}
+      {{- if not .Values.global.onPremEnabled }}
+      - image: "gcr.io/cloudsql-docker/gce-proxy:{{ .Values.data.cloudSqlProxyVersion }}"
+        imagePullPolicy: {{ .Values.data.imagePullPolicy | quote }}
+        name: cloud-sql-proxy
+        command:
+          - /cloud_sql_proxy
+          - "-instances={{ .Values.data.sqlConnectionString }}=tcp:5432"
+      {{- end }}
+        ports:
+        - containerPort: 9002
+      serviceAccountName: {{ .Values.data.serviceAccountName | quote }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 0

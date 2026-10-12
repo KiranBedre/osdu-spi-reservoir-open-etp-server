@@ -1,0 +1,101 @@
+version: '3'
+
+services:
+  open-etp-postgresql:
+    image: postgres
+    security_opt:
+      - no-new-privileges:true
+    container_name: open-etp-postgresql
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_PASSWORD=tester
+      - POSTGRES_USER=tester
+      - POSTGRES_DB=postkv
+    networks:
+      - web
+
+  open-etp-jaeger:
+    profiles:
+      - donotstart
+    image: jaegertracing/all-in-one:latest
+    security_opt:
+      - no-new-privileges:true
+    container_name: open-etp-jaeger
+    ports:
+      - "16686:16686"
+      - "4317:4317"
+      - "4318:4318"
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    networks:
+      - otel-network
+
+  open_etp_server_build:
+    build:
+      context: .
+      dockerfile: Dockerfile.build
+      args:
+        - VERSION=${VERSION_ENVVAR}
+        - BUILD_NUMBER=${BUILD_NUMBER_ENVVAR}
+        - BUILD_DATE=${BUILD_DATE_ENVVAR}
+        # [Optional] Allows to share VCPKG cache with host machine (set env var 'VCPKG_DEFAULT_BINARY_CACHE' with path to cache)
+        - USE_EXT_VCPKG_CACHE=$VCPKG_DEFAULT_BINARY_CACHE
+    image: open_etp_server_build
+    security_opt:
+      - no-new-privileges:true
+    labels:
+      OpenETPServer.service: build
+    logging:
+      driver: json-file
+    depends_on:
+      - open-etp-postgresql
+    environment:
+      - RDMS_DATA_PARTITION_MODE=single
+      - POSTGRESQL_CONN_STRING=host=open-etp-postgresql port=5432 dbname=postkv user=tester password=tester
+      - CODE_COVERAGE=ON
+      - OTEL_ENABLED=false
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://open-etp-jaeger:4318
+      - OTEL_SERVICE_NAME=etp_otel_service
+    volumes:
+      - ${SOURCE_HOST_DIR:-.}:/source
+      - ${VCPKG_DEFAULT_BINARY_CACHE:-.}:/vcpkg_cache
+    ports:
+      - "9002:9002"
+    networks:
+      - web
+      - otel-network
+      
+  open_etp_server_runtime:
+    profiles: ["cli-only"]
+    depends_on:
+      - open-etp-postgresql
+    build:
+      context: .
+      dockerfile: Dockerfile.runtime
+      args:
+        - VERSION=${VERSION_ENVVAR}
+        - BUILD_NUMBER=${BUILD_NUMBER_ENVVAR}
+        - BUILD_DATE=${BUILD_DATE_ENVVAR}
+    image: open_etp_server_runtime
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - ${SOURCE_HOST_DIR:-.}/data:/data
+    ports:
+      - "9002:9002"
+    labels:
+      OpenETPServer.service: runtime
+    logging:
+      driver: json-file
+    environment:
+        - RDMS_DATA_PARTITION_MODE=single
+        - POSTGRESQL_CONN_STRING=${POSTGRESQL_CONN_STRING:-host=open-etp-postgresql port=5432 dbname=postkv user=tester password=tester}
+    networks:
+      - web
+
+networks:
+  web:
+  otel-network:
+    driver:
+      "bridge"

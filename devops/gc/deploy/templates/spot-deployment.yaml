@@ -1,0 +1,95 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ printf "%s-spot" .Values.conf.appName | quote }}
+  namespace: {{ .Release.Namespace | quote }}
+  labels:
+    type: ddms
+    source: "c"
+spec:
+  replicas: {{ include "oetpServer.minReplicasSpot" . }}
+  selector:
+    matchLabels:
+      app: {{ .Values.conf.appName | quote }}
+      provision-type: "spot"
+  template:
+    metadata:
+      labels:
+        app: {{ .Values.conf.appName | quote }}
+        provision-type: "spot"
+      annotations:
+        {{- with .Values.data.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+        rollme: {{ randAlphaNum 5 | quote }}
+    spec:
+      affinity:
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+{{- range $key, $valuesList := .Values.data.affinityLabelsSpot }}
+            - weight: 80
+              preference:
+                matchExpressions:
+                  - key: {{ $key }}
+                    operator: In
+                    values:
+{{ toYaml $valuesList | nindent 22 }}
+{{- end }}
+      tolerations:
+        - key: "kubernetes.io/arch"
+          operator: "Equal"
+          value: "arm64"
+          effect: "NoSchedule"
+      containers:
+      - image: {{ .Values.data.image | quote }}
+        imagePullPolicy: {{ .Values.data.imagePullPolicy | quote }}
+        name: {{ .Values.conf.appName | quote }}
+        envFrom:
+        - configMapRef:
+            name: {{ .Values.conf.configmap | quote }}
+        - secretRef:
+            name: {{ .Values.conf.openEtpServerSecretName | quote }}
+        securityContext:
+          allowPrivilegeEscalation: false
+          runAsNonRoot: true
+        livenessProbe:
+          failureThreshold: 3
+          httpGet:
+            path: /health
+            port: 9002
+          initialDelaySeconds: 60
+          periodSeconds: 20
+          successThreshold: 1
+          timeoutSeconds: 3
+        readinessProbe:
+          failureThreshold: 3
+          tcpSocket:
+            port: 9002
+          initialDelaySeconds: 20
+          periodSeconds: 20
+          successThreshold: 1
+          timeoutSeconds: 3
+        resources:
+          requests:
+            cpu: {{ .Values.data.requestsCpu | quote }}
+            memory: {{ .Values.data.requestsMemory | quote }}
+{{- if .Values.global.limitsEnabled }}
+          limits:
+            cpu: {{ .Values.data.limitsCpu | quote }}
+            memory: {{ .Values.data.limitsMemory | quote }}
+{{- end }}
+      - image: "gcr.io/cloud-sql-connectors/cloud-sql-proxy:{{ .Values.data.cloudSqlProxyVersion }}"
+        imagePullPolicy: {{ .Values.data.imagePullPolicy | quote }}
+        name: cloud-sql-proxy
+        command:
+          - /cloud-sql-proxy
+          - "{{ .Values.data.sqlConnectionString }}"
+          - "--private-ip"
+        ports:
+        - containerPort: 9002
+      serviceAccountName: {{ .Values.data.serviceAccountName | quote }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 0

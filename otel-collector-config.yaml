@@ -1,0 +1,42 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:
+      http:
+  otlp/spanmetrics:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:12346
+
+processors:
+  batch:
+  spanmetrics:
+    metrics_exporter: prometheus
+
+exporters:
+  azuremonitor:
+    instrumentation_key: "${AZURE_INSTRUMENTATION_KEY}"
+    spaneventsenabled: true
+  logging:
+    verbosity: detailed
+  prometheus:
+    endpoint: "0.0.0.0:9464"
+    send_timestamps: true
+    metric_expiration: 180m
+    enable_open_metrics: true
+    resource_to_telemetry_conversion:
+      enabled: true
+
+service:
+  telemetry:
+    logs:
+      level: "debug"
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [spanmetrics, batch]
+      exporters: [logging, azuremonitor]
+    metrics:
+      receivers: [otlp/spanmetrics]
+      exporters: [prometheus]
+      processors: [batch]

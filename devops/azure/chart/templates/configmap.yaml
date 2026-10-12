@@ -1,0 +1,17 @@
+{{- $namespace := .Release.Namespace }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Values.configMap }}
+  namespace: {{ $namespace }}
+data:
+  CLOUD_PROVIDER: az
+  AZ_LOGGER_LEVEL: INFO
+  AZURE_ENABLE_MSI: "true"
+  STORAGE_URL: http://storage.{{ .Values.coreServicesNamespace | default "osdu-azure" }}/api/storage/v2
+  ENTITLEMENTS_URL: http://entitlements.{{ .Values.coreServicesNamespace | default "osdu-azure" }}/api/entitlements/v2
+  PARTITION_URL: http://partition.{{ .Values.coreServicesNamespace | default "osdu-azure" }}/api/partition/v1
+  RDMS_DATA_PARTITION_MODE: {{ .Values.postgres.partitionMode }}
+  {{- if .Values.azure.keyvault }}
+  KEYVAULT_URL: https://{{ .Values.azure.keyvault }}.vault.azure.net/
+  {{- end }}

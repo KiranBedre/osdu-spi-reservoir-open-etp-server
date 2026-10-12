@@ -1,0 +1,33 @@
+{{- $namespace := .Release.Namespace }}
+{{- $release := .Release.Name }}
+{{- $corsenabled := .Values.azure.corsEnabled | default false }}
+{{- range .Values.configuration }}
+{{- if .auth }}
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: {{ .service }}-jwt-authz
+  namespace: {{ $namespace }}
+spec:
+  selector:
+    matchLabels:
+      app: {{ .service }}
+  action: ALLOW
+  rules:
+    - from:
+        - source:
+            requestPrincipals: ["*"]
+      to:
+        - operation:
+            paths: [
+              {{- range .auth.disable }}
+              {{ . | quote }},
+              {{- end }}
+              {{ printf "%s/*" .pathPrefix | quote }}
+            ]
+            {{- if $corsenabled }}
+            notMethods: ["OPTIONS"]
+            {{- end }}
+{{- end }}
+---
+{{- end }}

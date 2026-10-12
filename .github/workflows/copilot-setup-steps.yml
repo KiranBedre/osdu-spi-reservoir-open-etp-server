@@ -1,0 +1,81 @@
+name: "Copilot Setup Steps"
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - .github/workflows/copilot-setup-steps.yml
+  pull_request:
+    paths:
+      - .github/workflows/copilot-setup-steps.yml
+
+jobs:
+  copilot-setup-steps:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # v5.0.1
+
+      - name: Detect project stacks
+        id: stacks
+        shell: bash
+        run: |
+          if [ -f pom.xml ] || [ -f build.gradle ] || [ -f build.gradle.kts ]; then
+            echo "java=true" >> "$GITHUB_OUTPUT"
+          fi
+          if [ -f requirements.txt ] || [ -f pyproject.toml ] || [ -f setup.py ]; then
+            echo "python=true" >> "$GITHUB_OUTPUT"
+          fi
+          if [ -f package.json ]; then
+            echo "node=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Azul Zulu JDK 17
+        if: steps.stacks.outputs.java == 'true'
+        uses: actions/setup-java@be666c2fcd27ec809703dec50e508c2fdc7f6654  # v5.2.0
+        with:
+          distribution: zulu
+          java-version: "17"
+          cache: maven
+
+      - name: Setup pinned Maven
+        uses: ./.github/actions/setup-maven
+
+      - name: Install Maven dependencies
+        if: steps.stacks.outputs.java == 'true'
+        env:
+          MAVEN_OPTS: "-Daether.connector.http.connectionMaxTtl=25"
+        run: mvn dependency:resolve dependency:resolve-sources -q
+
+      - name: Set up Python 3.11
+        if: steps.stacks.outputs.python == 'true'
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install Python dependencies
+        if: steps.stacks.outputs.python == 'true'
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          [ ! -f requirements.txt ] || python -m pip install -r requirements.txt
+          [ ! -f requirements-tests.in ] || python -m pip install -r requirements-tests.in
+
+      - name: Set up Node.js 24
+        if: steps.stacks.outputs.node == 'true'
+        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f  # v6.3.0
+        with:
+          node-version: "24"
+
+      - name: Install Node.js dependencies
+        if: steps.stacks.outputs.node == 'true'
+        shell: bash
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi

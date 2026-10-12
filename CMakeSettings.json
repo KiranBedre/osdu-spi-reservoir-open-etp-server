@@ -1,0 +1,160 @@
+{
+  "configurations": [
+    {
+      "name": "Win64-Debug-vcpkg",
+      "generator": "Ninja",
+      "configurationType": "Debug",
+      "inheritEnvironments": [ "msvc_x64_x64" ],
+      "buildRoot": "${env.USERPROFILE}\\CMakeBuilds\\${workspaceHash}\\build\\${name}",
+      "installRoot": "${env.USERPROFILE}\\CMakeBuilds\\${workspaceHash}\\install\\${name}",
+      "cmakeCommandArgs": "",
+      "buildCommandArgs": "",
+      "variables": [
+        {
+          "name": "CMAKE_TOOLCHAIN_FILE",
+          "value": "${env.VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+          "type": "STRING"
+        },
+        {
+          "name": "BUILD_OSDU_STUB_SERVER",
+          "value": "TRUE",
+          "type": "BOOL"
+        },
+        {
+          "name": "BUILD_BENCHMARK",
+          "value": "TRUE",
+          "type": "BOOL"
+        },
+        {
+          "name": "BUILD_TESTS",
+          "value": "TRUE",
+          "type": "BOOL"
+        }
+      ]
+    },
+    {
+      "name": "Win64-Release-vcpkg",
+      "generator": "Ninja",
+      "configurationType": "Release",
+      "inheritEnvironments": [ "msvc_x64_x64" ],
+      "buildRoot": "${env.USERPROFILE}\\CMakeBuilds\\${workspaceHash}\\build\\${name}",
+      "installRoot": "${env.USERPROFILE}\\CMakeBuilds\\${workspaceHash}\\install\\${name}",
+      "cmakeCommandArgs": "",
+      "buildCommandArgs": "",
+      "variables": [
+        {
+          "name": "CMAKE_TOOLCHAIN_FILE",
+          "value": "${env.VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+          "type": "STRING"
+        },
+        {
+          "name": "BUILD_OSDU_STUB_SERVER",
+          "value": "TRUE",
+          "type": "BOOL"
+        },
+        {
+          "name": "BUILD_BENCHMARK",
+          "value": "TRUE",
+          "type": "BOOL"
+        },
+        {
+          "name": "BUILD_TESTS",
+          "value": "TRUE",
+          "type": "BOOL"
+        }
+      ]
+    },
+    {
+      "name": "Linux-Debug-vcpkg",
+      "generator": "Ninja",
+      "configurationType": "Debug",
+      "cmakeExecutable": "cmake",
+      "remoteCopySourcesExclusionList": [ ".vs", ".git", "out", "build" ],
+      "cmakeCommandArgs": "",
+      "buildCommandArgs": "",
+      "ctestCommandArgs": "",
+      "inheritEnvironments": [ "linux_x64" ],
+      "remoteMachineName": "${defaultRemoteMachineName}",
+      "remoteCMakeListsRoot": "$HOME/.vs/${projectDirName}/${workspaceHash}/src",
+      "remoteBuildRoot": "$HOME/.vs/${projectDirName}/${workspaceHash}/out/build/${name}",
+      "remoteInstallRoot": "$HOME/.vs/${projectDirName}/${workspaceHash}/out/install/${name}",
+      "remoteCopySources": true,
+      "rsyncCommandArgs": "-t --delete --delete-excluded",
+      "remoteCopyBuildOutput": false,
+      "remoteCopySourcesMethod": "rsync",
+      "variables": [
+        {
+          "name": "CMAKE_TOOLCHAIN_FILE",
+          "value": "$HOME/vcpkg/scripts/buildsystems/vcpkg.cmake",
+          "type": "STRING"
+        },
+        {
+          "name": "CODE_COVERAGE",
+          "value": "FALSE",
+          "type": "BOOL"
+        },
+        {
+          "name": "BUILD_OSDU_STUB_SERVER",
+          "value": "TRUE",
+          "type": "BOOL"
+        },
+        {
+          "name": "BUILD_BENCHMARK",
+          "value": "TRUE",
+          "type": "BOOL"
+        },
+        {
+          "name": "BUILD_TESTS",
+          "value": "TRUE",
+          "type": "BOOL"
+        }
+      ]
+    },
+    {
+      "name": "Linux-Release-vcpkg",
+      "generator": "Ninja",
+      "configurationType": "RelWithDebInfo",
+      "cmakeExecutable": "cmake",
+      "remoteCopySourcesExclusionList": [ ".vs", ".git", "out", "build" ],
+      "cmakeCommandArgs": "",
+      "buildCommandArgs": "",
+      "ctestCommandArgs": "",
+      "inheritEnvironments": [ "linux_x64" ],
+      "remoteMachineName": "${defaultRemoteMachineName}",
+      "remoteCMakeListsRoot": "$HOME/.vs/${projectDirName}/${workspaceHash}/src",
+      "remoteBuildRoot": "$HOME/.vs/${projectDirName}/${workspaceHash}/out/build/${name}",
+      "remoteInstallRoot": "$HOME/.vs/${projectDirName}/${workspaceHash}/out/install/${name}",
+      "remoteCopySources": true,
+      "rsyncCommandArgs": "-t --delete --delete-excluded",
+      "remoteCopyBuildOutput": false,
+      "remoteCopySourcesMethod": "rsync",
+      "variables": [
+        {
+          "name": "CMAKE_TOOLCHAIN_FILE",
+          "value": "$HOME/vcpkg/scripts/buildsystems/vcpkg.cmake",
+          "type": "STRING"
+        },
+        {
+          "name": "CODE_COVERAGE",
+          "value": "FALSE",
+          "type": "BOOL"
+        },
+        {
+          "name": "BUILD_OSDU_STUB_SERVER",
+          "value": "TRUE",
+          "type": "BOOL"
+        },
+        {
+          "name": "BUILD_BENCHMARK",
+          "value": "TRUE",
+          "type": "BOOL"
+        },
+        {
+          "name": "BUILD_TESTS",
+          "value": "TRUE",
+          "type": "BOOL"
+        }
+      ]
+    }
+  ]
+}

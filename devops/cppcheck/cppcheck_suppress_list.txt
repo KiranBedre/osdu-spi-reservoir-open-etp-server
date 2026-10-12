@@ -1,0 +1,39 @@
+// Global ignores
+cppcheckError
+// missingIncludeSystem
+templateRecursion
+
+// Ignore those style issues for now (most are false positive)
+unusedFunction
+useStlAlgorithm
+
+// Trust code in those files (false positive)
+integerOverflow:*common/AvroBinary.cpp
+integerOverflow:*eml/Etp12MsgUtilsTests.cpp
+shiftTooManyBits:*common/AvroBinary.cpp
+shiftTooManyBitsSigned:*common/AvroBinary.cpp
+shiftTooManyBitsSigned:*common/AvroUtils.cpp
+shiftTooManyBitsSigned:*eml/Etp12MsgUtilsTests.cpp
+constParameterCallback:*/benchmark/*
+
+// Definitively false positive
+// std:string_view should be pass by value not by reference
+passedByValue:*core/utils/Logger.h:86
+passedByValue:*core/utils/Logger.h:89
+passedByValue:*common/CompressUtils.hpp:79
+passedByValue:*common/CompressUtils.hpp:102
+passedByValue:*common/CompressUtils.hpp:118
+passedByValue:*common/CompressUtils.hpp:188
+passedByValue:*common/etp12/Messages.h:114
+passedByValue:*bin/osduStubServer/http/BaseRequestHandlers.cpp:216
+passedByValue:*bin/osduStubServer/osdu/EntitlementsStub.cpp:49
+passedByValue:*bin/osduStubServer/osdu/KeyVaultStub.cpp:28
+passedByValue:*bin/osduStubServer/osdu/StorageStub.cpp:100
+passedByValue:*bin/osduStubServer/osdu/StorageStub.cpp:214
+
+// Trust code in those files (done on purpose)
+asctimeCalled:*utils/ChronoUtilsTests.cpp
+duplicateExpression:*utils/VersionNumberTests.cpp
+localMutex:*utils/ThreadUtilsTests.cpp
+literalWithCharPtrCompare:*utils/EnumDeclTests.cpp
+literalWithCharPtrCompare:*core/AssertTestToolsTests.cpp

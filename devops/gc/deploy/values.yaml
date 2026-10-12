@@ -1,0 +1,63 @@
+global:
+  domain: ""
+  limitsEnabled: true
+  tier: ""
+  autoscalingMode: "cpu"
+  logLevel: "ERROR"
+
+data:
+  #Configmaps
+  logLevel: ""
+  entitlementsUrl: "http://entitlements/api/entitlements/v2"
+  partitionUrl: "http://partition/api/partition/v1"
+  storageUrl: "http://storage/api/storage/v2"
+  cloudProvider: "gc"
+  groupId: "group"
+  rdmsDataConnectivityMode: "osdu"
+  rdmsDataPartitionMode: "multiple"
+  #Deployments
+  requestsCpu: "100m"
+  requestsMemory: "0.2G"
+  limitsCpu: "1"
+  limitsMemory: "1G"
+  cloudSqlProxyVersion: "2.18.0"
+  sqlConnectionString: ""
+  image: ""
+  imagePullPolicy: "IfNotPresent"
+  serviceAccountName: "oetp-server"
+  affinityLabelsSpot:
+    cloud.google.com/gke-provisioning:
+      - spot
+  podAnnotations:
+    traffic.sidecar.istio.io/excludeOutboundPorts: "5432"
+
+conf:
+  appName: "oetp-server"
+  configmap: "oetp-server-config"
+  openEtpServerSecretName: "oetp-server-secret"
+
+hpa:
+  minReplicas: 1
+  maxReplicas: 6
+  cpu:
+    utilization: 200
+    scaleUpStabilizationWindowSeconds: 30
+    scaleUpValue: 200
+    scaleUpPeriod: 15
+    scaleDownStabilizationWindowSeconds: 150
+    scaleDownValue: 100
+    scaleDownPeriod: 15
+  requests:
+    targetType: "AverageValue"
+    targetValue: 16
+    scaleUpStabilizationWindowSeconds: 10
+    scaleUpValue: 50
+    scaleUpPeriod: 15
+    scaleDownStabilizationWindowSeconds: 60
+    scaleDownValue: 25
+    scaleDownPeriod: 60
+
+limits:
+  maxTokens: 12
+  tokensPerFill: 12
+  fillInterval: "1s"

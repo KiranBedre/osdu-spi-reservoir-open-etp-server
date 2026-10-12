@@ -1,0 +1,23 @@
+{
+  "osdu_sync_branch": "release/0.29",
+  "last_osdu_commit": "b639f8d549d505ec92d681c53c55e3769071bb5d",
+  "adme_sync_branch": "m26",
+  "last_adme_commit": "de43beec11df92982db17f62b2c25fadd6b09b2e",
+  "overlay": {
+    "mode": "source-only",
+    "description": "ADO m26 Azure/core source and acceptance fixtures over the public OSDU release/0.29 base",
+    "excluded": [
+      "OEP pipeline definitions",
+      "OEP pipeline templates",
+      "private package and source credentials"
+    ]
+  },
+  "skipped_commits": [
+    {"commit": "467c7dfa1ae9d296f4a4874289e942e0dc8aac88", "reason": "AWS-only change (tests/providers/aws/*) - excluded directory"},
+    {"commit": "da619606007cee9b5734e839fa66277d2f65d732", "reason": "Merge commit - changes already in m26-master"},
+    {"commit": "55be23eff899ebef732a3e5e7420e3eed5c155ad", "reason": "Merge commit - contains only 467c7df which is AWS-only"},
+    {"commit": "b639f8d549d505ec92d681c53c55e3769071bb5d", "reason": "Merge commit - contains only 0049814 which was cherry-picked"},
+    {"commit": "1cfe611d518918b0e25477fe0b1af1c6189cf165", "reason": "Empty cherry-pick - m26 already has prm26cc pool variable"},
+    {"commit": "9a0f95d9b4bd10d7f7fd1f30961c93b0434e2958", "reason": "Empty cherry-pick - environment param already removed on m26"}
+  ]
+}

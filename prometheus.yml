@@ -1,0 +1,8 @@
+global:
+  scrape_interval:  15s # How frequently to scrape targets by default. Default = 1m
+  # scrape_timeout How long until a scrape request times out. Default = 10s
+  evaluation_interval: 15s # How frequently to evaluate rules. Default = 1m
+scrape_configs:
+  - job_name: prometheus_open_etp_server
+    static_configs:
+    - targets: ['otel-collector:9464'] # using the name of the OpenTelemetryCollector docker container 

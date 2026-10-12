@@ -1,0 +1,75 @@
+# docker build . -t open-etp-server:your_tag --file Dockerfile.bundle --build-args CLIENT_SSL=true
+FROM ubuntu:22.04 as build
+
+ARG VERSION=0.1
+
+LABEL version="${VERSION}"
+LABEL vendor="OSDU Reservoir DDMS"
+LABEL description="Open ETP Server Building Image"
+
+RUN apt-get update && \
+    apt-get upgrade -y && \
+# Define DEBIAN_FRONTEND to allow non interactive installation of some packages
+    DEBIAN_FRONTEND=noninteractive \
+    apt-get install -y --no-install-recommends \
+    ca-certificates \
+# Build system packages
+    # VCPKG prerequisites
+        git \
+        build-essential tar curl zip unzip \
+        pkg-config \
+    ninja-build=1.1* \
+    libgomp1=12* \
+    cmake=3.* \
+    gdb \
+    curl \
+# libpq requires these packages
+    autoconf \
+    bison \
+    flex \
+# For code coverage
+    gcovr \
+# For the beauty of the output
+    figlet \
+&& apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Install VCPKG manager
+ENV VCPKG_ROOT="$HOME/vcpkg"
+RUN mkdir $VCPKG_ROOT \
+    && git clone "https://github.com/Microsoft/vcpkg.git" $VCPKG_ROOT \
+    && $VCPKG_ROOT/bootstrap-vcpkg.sh \
+    && chmod -R 777 $VCPKG_ROOT
+
+ADD . /source
+# COPY ./vcpkg.json /source
+RUN chmod 777 /source && ls -l /source/
+WORKDIR /source
+
+# Build
+RUN ls -a /source/ && cmake -GNinja -DCMAKE_BUILD_TYPE=Debug -DCODE_COVERAGE=ON /source/ -DCMAKE_INSTALL_PREFIX="./dist" -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake
+RUN ninja install "$@" && \
+    cd ./dist && tar -czvf /source/dist.tgz .
+
+#########################################
+##### Stage for runtime image ###########
+#########################################
+FROM ubuntu:22.04
+
+RUN  apt-get update && apt-get upgrade -y
+
+ARG VERSION=0.1
+ARG BUILD_NUMBER="unknown"
+ARG BUILD_DATE="unknown"
+
+LABEL version="${VERSION}"
+LABEL vendor="OSDU Reservoir DDMS"
+LABEL description="Open ETP Server Runtime Image"
+LABEL build-number=${BUILD_NUMBER}
+LABEL build-date=${BUILD_DATE}
+
+COPY --from=build /source/dist.tgz /tmp/dist.tgz
+RUN tar -xzvf /tmp/dist.tgz -C /usr/ && rm -rf /tmp/dist.tgz
+
+EXPOSE 9002
+
+CMD [ "openETPServer", "server", "-h" ]

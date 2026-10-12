@@ -1,0 +1,160 @@
+# Credits
+
+This application uses Open Source components.
+You can find the source code of their open source projects along with license information below.
+We acknowledge and are grateful to these developers for their contributions to open source.
+
+- AVRO
+Project: Apache Avro (https://github.com/apache/avro)
+License (Apache-2.0) https://www.openssl.org/source/license.html
+
+- BOOST
+Project: boost (from https://github.com/boostorg/boost)
+License (BSL-1.0) http://www.boost.org/LICENSE_1_0.txt
+
+- CPP-JWT
+Project: CPP-JWT (from https://github.com/arun11299/cpp-jwt)
+Copyright (c) 2017 Arun Muralidharan
+License (MIT) https://github.com/arun11299/cpp-jwt/blob/master/LICENSE
+
+- CURL
+Project: Curl (from https://github.com/curl/curl)
+Copyright (c) 1996 - 2021, Daniel Stenberg, daniel@haxx.se
+License (inspired by MIT/X) https://curl.se/docs/copyright.html
+
+- FESAPI
+Project: FESAPI (from https://github.com/F2I-Consulting/fesapi)
+License (Apache-2.0) https://github.com/F2I-Consulting/fesapi/blob/master/LICENSE
+
+- FMT
+Project: {fmt} (from https://github.com/fmtlib/fmt)
+Copyright (c) 2012 - present, Victor Zverovich
+License https://github.com/fmtlib/fmt/blob/master/LICENSE.rst
+
+- HDF5
+Project: HDF5 (from https://github.com/HDFGroup/hdf5)
+Copyright 2006 by The HDF Group. 
+License (HDF5) https://github.com/HDFGroup/hdf5/blob/develop/COPYING
+
+- HowardHinnant DATE
+Project: HowardHinnant Date (https://github.com/HowardHinnant/date)
+Copyright (c) 2015 Howard Hinnant
+License (MIT) https://github.com/HowardHinnant/date
+
+- MINIZIP
+Project: MiniZip (from http://www.winimage.com/zLibDll/minizip.html)
+Copyright (C) 1998-2005 Gilles Vollant
+Includes Zip64 support by Mathias Svensson <mathias@result42.com>
+License (Info-ZIP)
+Mini zip and unzip based on zlib (from http://www.zlib.net/)
+License (ZLib)
+
+- MOODYCAMEL
+Project: MoodyCamel::ConcurrentQueue (https://github.com/cameron314/concurrentqueue)
+Copyright (c) 2013-2020 Cameron Desrochers.
+License (BSD-3-Clause) https://github.com/cameron314/concurrentqueue/blob/master/LICENSE.md
+
+- NLOHMANN
+Project: nlohman json (from https://github.com/nlohmann/json)
+Copyright (c) 2013-2019 Niels Lohmann <http://nlohmann.me>
+License (MIT) http://opensource.org/licenses/MIT
+
+- OPENSSSL
+Project: OpenSSL (from https://github.com/openssl/openssl)
+Copyright 1995-2019 The OpenSSL Project Authors.
+License (Apache-2.0) https://www.openssl.org/source/license.html
+
+- POSTGRES LIBPQ
+Project: Postgres libPQ (from https://github.com/postgres/postgres/tree/master/src/backend/libpq)
+Copyright (c) 1996-2020, PostgreSQL Global Development Group
+License (PostgreSQL) https://github.com/postgres/postgres/blob/master/COPYRIGHT
+
+- RAPIDXML NS
+Project: RapidXML NS (from https://github.com/svgpp/rapidxml_ns)
+Copyright (C) 2006, 2009 Marcin Kalicinski
+License (BSL-1.0) https://github.com/svgpp/rapidxml_ns/blob/master/license.txt
+License (MIT) https://github.com/svgpp/rapidxml_ns/blob/master/license.txt
+
+- SQLITE
+Project: SQLite (from https://sqlite.org)
+License (Public domain) https://sqlite.org/copyright.html
+
+- WEBSOCKECPP
+Project: WebSocket++ (from https://github.com/zaphoyd/websocketpp)
+Copyright (c) 2014, Peter Thorson. All rights reserved.
+License https://github.com/zaphoyd/websocketpp/blob/master/COPYING
+
+- GOOGLETEST GOOGLEMOCK
+Project: googletest googlemock (https://github.com/google/googletest)
+Copyright 2008, Google Inc. All rights reserved.
+License (BSD-3) https://github.com/google/googletest/blob/main/LICENSE
+
+# 3rd-Party Software License Notice
+This software includes the following software and licenses:
+
+========================================================================
+Apache-2.0
+========================================================================
+The following software have components provided under the terms of this license:
+
+- Apache Avro (https://github.com/apache/avro)
+- FESAPI (from https://github.com/F2I-Consulting/fesapi)
+- OpenSSL (from https://github.com/openssl/openssl)
+
+========================================================================
+BSD-3-Clause
+========================================================================
+The following software have components provided under the terms of this license:
+
+- MoodyCamel::ConcurrentQueue (https://github.com/cameron314/concurrentqueue)
+- googletest googlemock (https://github.com/google/googletest)
+
+========================================================================
+BSL-1.0
+========================================================================
+The following software have components provided under the terms of this license:
+
+- boost (from https://github.com/boostorg/boost)
+- RapidXML NS (from https://github.com/svgpp/rapidxml_ns)
+
+========================================================================
+Info-ZIP
+========================================================================
+The following software have components provided under the terms of this license:
+
+- MiniZip (from http://www.winimage.com/zLibDll/minizip.html)
+
+========================================================================
+MIT
+========================================================================
+The following software have components provided under the terms of this license:
+
+- CPP-JWT (from https://github.com/arun11299/cpp-jwt)
+- nlohman json (from https://github.com/nlohmann/json)
+- HowardHinnant Date (https://github.com/HowardHinnant/date)
+- RapidXML NS (from https://github.com/svgpp/rapidxml_ns)
+
+========================================================================
+PostgreSQL
+========================================================================
+The following software have components provided under the terms of this license:
+
+- Postgres libPQ (from https://github.com/postgres/postgres/tree/master/src/backend/libpq)
+
+========================================================================
+Zlib
+========================================================================
+The following software have components provided under the terms of this license:
+
+- ZLib (from http://www.zlib.net/)
+
+
+========================================================================
+Other permissive license
+========================================================================
+
+- Curl (from https://github.com/curl/curl)
+- {fmt} (from https://github.com/fmtlib/fmt)
+- SQLite (from https://sqlite.org)
+- WebSocket++ (from https://github.com/zaphoyd/websocketpp)
+

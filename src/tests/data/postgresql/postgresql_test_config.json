@@ -1,0 +1,10 @@
+{
+  "Connection": {
+    "user":"tester",
+    "password":"tester",
+    "active":true,
+    "host":"open-etp-postgresql",
+    "port":5432,
+    "dbname":"postkv"
+  }
+}

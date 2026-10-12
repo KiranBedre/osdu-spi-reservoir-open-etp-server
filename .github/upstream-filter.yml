@@ -1,0 +1,5 @@
+# Open ETP uses SYNC_MODE=passthrough because its C++ Azure and shared sources
+# coexist in the community tree. Fork-owned deletions keep OEP CI templates out
+# of main; this file fails closed if the repository is switched to filter mode.
+service: open-etp-server
+top_level: {}

@@ -1,0 +1,28 @@
+# Build results
+[Bb]uild/
+Testing/Temporary/**
+.vcpkg_cache/
+.spi/results/
+
+*~
+*.swp
+*.pyo
+*.pyc
+*.gcov
+
+# IDE folders
+.vs/
+/.vscode/*
+/*.kdev4
+/.idea
+
+# ReSharper C++ add-in
+_ReSharper*/
+*.[Rr]e[Ss]harper
+*.DotSettings.user
+
+3rdParties
+data/
+
+# Environment configuration
+.envrc

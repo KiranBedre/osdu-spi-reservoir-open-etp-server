@@ -1,0 +1,36 @@
+FROM ubuntu:22.04
+
+ARG VERSION=0.1 \
+    USE_EXT_VCPKG_CACHE
+# Create a runtime image with debug version
+ARG DIST=./build/using_docker_debug/
+ARG BUILD_NUMBER="unknown"
+ARG BUILD_DATE="unknown"
+
+LABEL version="${VERSION}"
+LABEL vendor="OSDU Reservoir DDMS"
+LABEL description="Open ETP Server Runtime Debug Image"
+LABEL build-number=${BUILD_NUMBER}
+LABEL build-date=${BUILD_DATE}
+
+# install required packages for debugging
+RUN apt-get update && \
+    apt-get upgrade -y && \
+# Define DEBIAN_FRONTEND to allow non interactive installation of some packages
+    DEBIAN_FRONTEND=noninteractive \
+    apt-get install -y --no-install-recommends \
+    gdb \
+    wget \
+&& apt-get clean && rm -rf /var/lib/apt/lists/*
+
+ADD ${DIST}/lib/ /usr/lib/
+ADD ${DIST}/../using_docker/dist/lib/libavrocpp.so.1.11.2-SNAPSHOT /usr/lib/
+ADD ${DIST}/openETPServer /usr/bin/
+ADD ${DIST}/openETPServer_config.json /usr/bin/
+
+RUN chmod 777 /usr/lib/liboes_*
+RUN chmod 777 /usr/bin/openETPServer*
+
+EXPOSE 9002
+
+CMD [ "openETPServer", "server", "-h" ]

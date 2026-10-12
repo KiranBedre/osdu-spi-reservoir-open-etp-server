@@ -1,0 +1,72 @@
+Info:         29,181,464 Dataset stored bytes
+Info:        633,620,107 Dataset bytes un-chunked & un-compressed
+Info:              21.7x Compression ratio (exclude metadata overhead)
+Info: 
+      <<< Datasets by rank >>>
+Info:                 36 1D
+Info:                  3 2D
+Info:                158 3D
+Info: 
+      <<< Datasets by datatype class >>>
+Info:                 43 Integer
+Info:                154 Floating-Point
+Info: 
+      <<< Datasets by rank & numeric type >>>
+Info:                  1 1D - char/bool
+Info:                 34 1D - int
+Info:                  1 1D - double
+Info:                  1 2D - char/bool
+Info:                  2 2D - int
+Info:                  1 3D - char/bool
+Info:                  4 3D - int
+Info:                152 3D - float
+Info:                  1 3D - double
+Info: 
+      <<< Datasets by 'storage' size-range >>>
+Info:                  0 (         1 -          2] bytes
+Info:                  0 (         2 -          4] bytes
+Info:                  0 (         4 -          8] bytes
+Info:                  0 (         8 -         16] bytes
+Info:                  0 (        16 -         32] bytes
+Info:                  0 (        32 -         64] bytes
+Info:                  0 (        64 -        128] bytes
+Info:                  1 (       128 -        256] bytes
+Info:                  2 (       256 -        512] bytes
+Info:                  2 (       512 -      1,024] bytes
+Info:                  6 (     1,024 -      2,048] bytes
+Info:                  5 (     2,048 -      4,096] bytes
+Info:                  3 (     4,096 -      8,192] bytes
+Info:                  5 (     8,192 -     16,384] bytes
+Info:                  5 (    16,384 -     32,768] bytes
+Info:                  8 (    32,768 -     65,536] bytes
+Info:                155 (    65,536 -    131,072] bytes
+Info:                  2 (   131,072 -    262,144] bytes
+Info:                  1 (   262,144 -    524,288] bytes
+Info:                  1 (   524,288 -  1,048,576] bytes
+Info:                  0 ( 1,048,576 -  2,097,152] bytes
+Info:                  0 ( 2,097,152 -  4,194,304] bytes
+Info:                  0 ( 4,194,304 -  8,388,608] bytes
+Info:                  1 ( 8,388,608 - 16,777,216] bytes
+Info: 
+       <<< Dataset 'storage' size - Top 10 >>>
+Info:         11,636,128 RESQML/d6f43026-e0cd-482d-83b5-63e6ea1e8c84/Points
+                   3D - 51 x 28,529 x 3 - double (34,919,496 bytes, 3.0x)
+Info:            894,347 RESQML/2efbb020-a489-4037-87b0-7204784f7c0c/CellIndexPairs
+                   2D - 194,923 x 2 - int (1,559,384 bytes, 1.7x)
+Info:            276,799 RESQML/d6f43026-e0cd-482d-83b5-63e6ea1e8c84/nodeIsColocatedOnKEdge
+                   1D - 3,794,400 - char/bool (3,794,400 bytes, 13.7x)
+Info:            134,571 RESQML/9c54c23e-aabf-48cb-8139-4a962da2e0c8/values_patch0
+                   3D - 50 x 186 x 100 - float (3,720,000 bytes, 27.6x)
+Info:            131,130 RESQML/0578f0d3-2e8f-422a-af6f-89173f250a80/values_patch0
+                   3D - 50 x 186 x 100 - int (3,720,000 bytes, 28.4x)
+Info:            116,062 RESQML/503ffa63-00d9-4c46-90e3-805308d61376/values_patch0
+                   3D - 50 x 186 x 100 - int (3,720,000 bytes, 32.1x)
+Info:            113,273 RESQML/b3621c25-df72-480a-8dbe-3ec825f1507d/values_patch0
+                   3D - 50 x 186 x 100 - float (3,720,000 bytes, 32.8x)
+Info:            113,076 RESQML/cebdedba-e815-47e1-a529-8408bac66840/values_patch0
+                   3D - 50 x 186 x 100 - float (3,720,000 bytes, 32.9x)
+Info:            112,942 RESQML/da295b6a-a3d5-41da-baab-71ed858e8ad2/values_patch0
+                   3D - 50 x 186 x 100 - float (3,720,000 bytes, 32.9x)
+Info:            112,851 RESQML/779da760-e09f-4199-8617-358bedb10f9d/values_patch0
+                   3D - 50 x 186 x 100 - float (3,720,000 bytes, 33.0x)
+Info: openETPServer: done.

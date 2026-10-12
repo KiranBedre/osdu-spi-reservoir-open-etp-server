@@ -1,0 +1,22 @@
+# Exclude everything
+**
+
+# Allow using dist for runtime image
+!/build/using_docker/dist/**
+!/build/using_docker/dist.tgz
+
+# Allow using dist for SSL runtime image
+!/build/using_docker_ssl/dist/**
+!/build/using_docker_ssl/dist.tgz
+
+# allow using scripts for build
+!/devops/scripts/**
+!/cmake/**
+!/src/**
+!/tests/**
+!/CMakeLists.txt
+!/source/**
+!/build/**
+!/vcpkg.json
+!/config/**
+!/devops/azure/tasks/etp-ssl-client-integration-tests.sh

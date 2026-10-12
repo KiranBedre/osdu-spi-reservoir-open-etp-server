@@ -1,0 +1,23 @@
+FROM ubuntu:22.04
+
+ARG VERSION=0.1
+
+LABEL version="${VERSION}"
+LABEL vendor="OSDU Reservoir DDMS"
+LABEL description="Open ETP Server Cppcheck Image"
+
+
+RUN apt-get update && \
+    apt-get upgrade -y && \
+    apt-get install -y --no-install-recommends \
+# Tools for static code analysis
+        clang-tidy \
+        cppcheck \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Place for the source code
+RUN mkdir -p /source
+VOLUME /source
+WORKDIR /source
+
+CMD [ "bash", "-c", "devops/scripts/cppcheck_scan.sh" ]

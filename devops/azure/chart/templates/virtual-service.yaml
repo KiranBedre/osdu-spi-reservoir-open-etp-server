@@ -1,0 +1,30 @@
+---
+{{- $namespace := .Release.Namespace }}
+{{- $servicePort := .Values.service.port }}
+{{- $release := .Release.Name }}
+{{- $istioHost := .Values.istioDnsHost }}
+{{- if .Values.istioDnsHost }}
+{{- range .Values.configuration }}
+apiVersion: networking.istio.io/v1alpha3
+kind: VirtualService
+metadata:
+  name: {{ printf "%s-%s" $release .service }}
+  namespace: {{ $namespace }}
+spec:
+  hosts:
+  - "{{ $istioHost }}"
+  gateways:
+  - osdu/istio-gateway
+  http:
+  - match:
+    - uri:
+        prefix: "{{ .pathPrefix }}/"
+    rewrite:
+      uri: /
+    route:
+    - destination:
+        host: {{ .service }}
+        port:
+          number: {{ $servicePort }}
+{{- end }}
+{{- end }}

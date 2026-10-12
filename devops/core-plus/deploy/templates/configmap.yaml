@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  labels:
+    app: {{ .Values.conf.appName | quote }}
+  name: {{ .Values.conf.configmap | quote }}
+  namespace: {{ .Release.Namespace | quote }}
+data:
+  CLOUD_PROVIDER: {{ .Values.data.cloudProvider | quote }}
+  DOMAIN_NAME: {{ .Values.data.groupId | quote }}
+  ENTITLEMENTS_URL: {{ .Values.data.entitlementsUrl | quote }}
+  OSDU_HOST: {{ printf "https://osdu.%s" .Values.global.domain | quote }}
+  CIMPL_TOKEN_URI: {{ printf "https://keycloak.%s/realms/osdu/protocol/openid-connect/token" .Values.global.domain | quote }}
+  PARTITION_URL: {{ .Values.data.partitionUrl | quote }}
+  RDMS_DATA_CONNECTIVITY_MODE: {{ .Values.data.rdmsDataConnectivityMode | quote }}
+  RDMS_DATA_PARTITION_MODE: {{ .Values.data.rdmsDataPartitionMode | quote }}
+  STORAGE_URL: {{ .Values.data.storageUrl | quote }}
+  CIMPL_CLIENT_ID:  {{ .Values.keycloak.clientId | quote }}
+  CIMPL_CLIENT_SECRET: {{ .Values.keycloak.clientSecret | quote }}
