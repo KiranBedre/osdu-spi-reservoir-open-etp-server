@@ -228,11 +228,8 @@ runs:
         context: ${{ runner.temp }}/spi-service-image-context
         file: ${{ runner.temp }}/spi-service-image-context/.spi.Dockerfile
         push: ${{ inputs.push == 'true' }}
-        # Multi-arch only on the push path; validate-only builds skip the QEMU cost on every PR.
-        # provenance:false keeps the pushed index to the two real platforms: the unknown/unknown
-        # attestation manifest makes a bare docker pull miss on arm64.
-        # Source artifacts are built on the amd64 Node runner and can contain native modules.
-        platforms: ${{ inputs.build_kind == 'source' && 'linux/amd64' || (inputs.push == 'true' && 'linux/amd64,linux/arm64' || 'linux/amd64') }}
+        # SPI AKS NodePools require amd64. Do not emulate an architecture this service cannot run on.
+        platforms: linux/amd64
         provenance: false
         tags: ${{ steps.tags.outputs.docker_tags }}
         build-args: |
