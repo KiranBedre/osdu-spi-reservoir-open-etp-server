@@ -123,13 +123,13 @@ EXPOSE 9002
 
 FROM runtime-base AS acceptance
 USER root
-WORKDIR /acceptance/devops/azure/tasks
+WORKDIR /suite/devops/azure/tasks
 COPY --chown=1000:1000 devops/azure/tasks/etp-ssl-client-integration-tests.sh ./
 COPY --from=acceptance-fixtures --chown=1000:1000 \
-    /fixtures/IntegrationTestsData/ /acceptance/data/IntegrationTestsData/
+    /fixtures/IntegrationTestsData/ /suite/data/IntegrationTestsData/
 RUN mkdir -p results && \
     chmod 0755 etp-ssl-client-integration-tests.sh && \
-    chown -R 1000:1000 /acceptance
+    chown -R 1000:1000 /suite
 USER 1000:1000
 ENTRYPOINT ["./etp-ssl-client-integration-tests.sh"]
 
