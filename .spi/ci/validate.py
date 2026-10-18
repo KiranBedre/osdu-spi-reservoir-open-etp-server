@@ -181,6 +181,14 @@ def main() -> int:
         "COPY --from=acceptance-fixtures" in dockerfile,
         "acceptance image must use integrity-verified downloaded fixtures",
     )
+    require(
+        "WORKDIR /suite/devops/azure/tasks" in dockerfile,
+        "acceptance image must place the suite under the SPI paired-image root",
+    )
+    require(
+        "/suite/data/IntegrationTestsData/" in dockerfile,
+        "acceptance fixtures must remain relative to the SPI suite root",
+    )
 
     fixture_fetcher = ROOT / "devops/scripts/fetch-test-fixtures.sh"
     fixture_script = fixture_fetcher.read_text(encoding="utf-8")
