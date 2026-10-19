@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.3](https://github.com/KiranBedre/osdu-spi-reservoir-open-etp-server/compare/v0.1.2...v0.1.3) (2026-10-19)
+
+
+### 🐛 Bug Fixes
+
+* Preserve amd64 image platform ([#7](https://github.com/KiranBedre/osdu-spi-reservoir-open-etp-server/issues/7)) ([b2e657f](https://github.com/KiranBedre/osdu-spi-reservoir-open-etp-server/commit/b2e657f144685c093d047c31f0c498bc680b1073))
+
 ## [0.1.2](https://github.com/KiranBedre/osdu-spi-reservoir-open-etp-server/compare/v0.1.1...v0.1.2) (2026-10-19)
 
 
