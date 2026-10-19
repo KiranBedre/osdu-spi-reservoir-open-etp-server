@@ -120,7 +120,10 @@ def main() -> int:
     service = report["service_config"]
     contract = report["contract"]
     require(service["name"] == "open-etp", "descriptor service name changed")
-    require(service["archetype"] == "cpp-cmake-azure", "C++ archetype did not resolve")
+    require(
+        service["archetype"] == "native-container-azure",
+        "native container archetype did not resolve",
+    )
     require(
         service["image"]["dockerfile"] == "devops/azure/Dockerfile",
         "service image Dockerfile did not resolve",
@@ -247,7 +250,10 @@ def main() -> int:
         )
     )
     archetypes = schema["properties"]["service"]["properties"]["archetype"]["enum"]
-    require("cpp-cmake-azure" in archetypes, "published schema omits C++ archetype")
+    require(
+        "native-container-azure" in archetypes,
+        "published schema omits native container archetype",
+    )
 
     provenance = json.loads((ROOT / "commits.json").read_text(encoding="utf-8"))
     require(
