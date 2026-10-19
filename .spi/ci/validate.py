@@ -129,6 +129,10 @@ def main() -> int:
         "service image Dockerfile did not resolve",
     )
     require(
+        service["image"]["platforms"] == "linux/amd64",
+        "service image platform must preserve the amd64 release contract",
+    )
+    require(
         set(contract["dependencies"]) == {"partition", "entitlements", "legal", "storage"},
         "acceptance dependencies changed",
     )
