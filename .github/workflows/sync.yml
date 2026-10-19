@@ -40,7 +40,7 @@ jobs:
             echo "This variable should contain the URL of your upstream repository (e.g., https://github.com/Azure/osdu-infrastructure.git)"
             exit 1
           fi
-
+          
           echo "Adding upstream remote: ${{ vars.UPSTREAM_REPO_URL }}"
           git remote add upstream "${{ vars.UPSTREAM_REPO_URL }}" || {
             echo "::error::Failed to add upstream remote. Please check the UPSTREAM_REPO_URL variable."
@@ -51,7 +51,7 @@ jobs:
         env:
           SYNC_MODE: ${{ vars.SYNC_MODE }}
         run: |
-          if [ "${SYNC_MODE:-filter}" = "passthrough" ]; then
+          if [ "${SYNC_MODE:-filter}" = "passthrough" ] || [ "$SYNC_MODE" = "snapshot" ]; then
             git fetch upstream --prune --no-tags
           else
             git fetch upstream --prune
@@ -83,12 +83,12 @@ jobs:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           echo "Checking for active cascade integrations..."
-
+          
           ACTIVE_CASCADE=$(gh issue list \
             --label "upstream-sync,cascade-active" \
             --state open \
             --json number,title)
-
+          
           if [ -n "$ACTIVE_CASCADE" ] && [ "$ACTIVE_CASCADE" != "[]" ]; then
             echo "❌ Upstream sync blocked - active cascade in progress"
             echo "Active cascades:"
@@ -100,7 +100,7 @@ jobs:
             echo "3. Manually resolve any stuck cascades before retrying upstream sync"
             exit 1
           fi
-
+          
           echo "✅ No active cascades detected - proceeding with upstream sync"
 
       - name: Check sync state and prevent duplicates
@@ -117,7 +117,7 @@ jobs:
         if: steps.sync-state.outputs.should_create_pr == 'true' || steps.sync-state.outputs.should_update_branch == 'true'
         env:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
-          # mirror and passthrough take the upstream tip verbatim, without the filter engine.
+          # Mirror, passthrough, and snapshot take the upstream tip tree verbatim.
           SYNC_MODE: ${{ vars.SYNC_MODE }}
         run: |
           echo "Sync mode: ${SYNC_MODE:-filter}"
@@ -268,27 +268,27 @@ jobs:
             --title "⬆️ Sync with upstream $UPSTREAM_VERSION (Updated)" \
             --body-file /tmp/pr_body.txt
           rm -f /tmp/pr_body.txt
-
+          
           EXISTING_COMMENT=$(gh pr view "$PR_NUMBER" --json comments --jq '.comments[] | select(.body | contains("🔄 **Sync Updated**")) | .body' | grep -c "New upstream version.*$UPSTREAM_VERSION" || echo "0")
-
+          
           if [ "$EXISTING_COMMENT" = "0" ]; then
             gh pr comment "$PR_NUMBER" --body "🔄 **Sync Updated**
-
+            
             The upstream repository has advanced since this PR was created. This branch has been updated with the latest changes from upstream.
-
+            
             **New upstream version**: \`$UPSTREAM_VERSION\`
             **Updated at**: \`$(date -u +%Y-%m-%dT%H:%M:%SZ)\`
             **PR description**: Regenerated to include all commits (original + new changes)
-
+            
             Please review the updated changes and merge when ready."
             echo "✅ Added sync update comment for upstream version $UPSTREAM_VERSION"
           else
             echo "ℹ️ Skipping duplicate comment - sync update for $UPSTREAM_VERSION already exists"
           fi
-
+          
           echo "pr-url=${{ github.server_url }}/${{ github.repository }}/pull/$PR_NUMBER" >> $GITHUB_OUTPUT
           echo "pr-number=$PR_NUMBER" >> $GITHUB_OUTPUT
-
+          
           echo "✅ Updated existing PR #$PR_NUMBER with new upstream changes and regenerated description"
 
       - name: Create human notification issue
@@ -373,24 +373,24 @@ jobs:
           echo "Updating issue description for issue #$ISSUE_NUMBER"
           echo "Repository: $GH_REPO"
           echo "Parameters: UPSTREAM_VERSION=$UPSTREAM_VERSION, UPSTREAM_SHA=$UPSTREAM_SHA, SYNC_BRANCH=$SYNC_BRANCH"
-
+          
           echo "Fetching current issue body..."
           CURRENT_BODY=$(gh api "repos/$GH_REPO/issues/$ISSUE_NUMBER" --jq '.body')
-
+          
           if [ -z "$CURRENT_BODY" ] || [ "$CURRENT_BODY" = "null" ]; then
             echo "❌ Error: Could not fetch issue body"
             exit 1
           fi
-
+          
           if [ -n "$SYNC_BRANCH" ] && git rev-parse --verify "$SYNC_BRANCH" >/dev/null 2>&1; then
             COMMIT_COUNT=$(git rev-list --count fork_upstream..$SYNC_BRANCH 2>/dev/null || echo "0")
           else
             # A no-change update creates no local branch ref; count from the remote branch.
             COMMIT_COUNT=$(git rev-list --count fork_upstream..origin/$SYNC_BRANCH 2>/dev/null || echo "0")
           fi
-
+          
           echo "Calculated commit count: $COMMIT_COUNT"
-
+          
           printf '%s\n' "$CURRENT_BODY" > /tmp/current_body.txt
 
           bash .github/actions/sync-state-manager/update-issue-body.sh \
@@ -400,12 +400,12 @@ jobs:
             "$UPSTREAM_SHA" \
             "$COMMIT_COUNT" \
             "$SYNC_BRANCH"
-
+          
           echo "Updating issue description..."
           gh issue edit "$ISSUE_NUMBER" --body-file /tmp/updated_body.txt
-
+          
           rm -f /tmp/current_body.txt /tmp/updated_body.txt
-
+          
           echo "✅ Updated issue description with current sync status:"
           echo "  - Upstream Version: $UPSTREAM_VERSION"
           echo "  - Upstream SHA: $UPSTREAM_SHA"
@@ -416,7 +416,7 @@ jobs:
         if: steps.sync-changes.outputs.has_changes == 'true' || steps.sync-state.outputs.sync_decision == 'add_reminder'
         run: |
           SYNC_DECISION="${{ steps.sync-state.outputs.sync_decision }}"
-
+          
           case "$SYNC_DECISION" in
             "create_new")
               PR_URL="${{ steps.create-pr.outputs.pr-url }}"

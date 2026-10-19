@@ -81,19 +81,13 @@ A Python service declares:
 - `image.context` and `image.dockerfile`, the source-based container build
   inputs.
 
-A C++ service declares:
-
-- `sourcePath`, the repository-relative CMake project root; and
-- `image.context` and `image.dockerfile`, which identify the pinned container
-  toolchain used for both CMake validation and service image publication.
-
 `python-fastapi-azure` uses the fork-owned `.spi/ci/build.sh` for lint and unit
 tests. The script must emit the JUnit and coverage files the Python build action
 declares.
 
-`cpp-cmake-azure` uses the same fork-owned build-script convention. Open ETP's
-script builds the Dockerfile's `build-env` target, where CMake, Ninja, and CTest
-run against the pinned public vcpkg commit.
+A native container service declares `sourcePath`, `image.context`, and
+`image.dockerfile`, but no language runtime version. Its Dockerfile must expose
+the fixed `spi-test` target described by the native container build action.
 
 Version 4 also adds `script` suites. A script suite declares a
 repository-relative `entrypoint`, an optional array of `arguments`, and one or

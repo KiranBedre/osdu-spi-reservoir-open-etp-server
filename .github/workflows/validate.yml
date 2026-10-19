@@ -61,7 +61,7 @@ jobs:
       (github.event_name == 'pull_request_target' &&
        github.event.pull_request.head.repo.full_name == github.repository &&
        startsWith(github.event.pull_request.head.ref, 'sync/')) ||
-      (github.event_name == 'push' &&
+      (github.event_name == 'push' && 
        !contains(github.event.head_commit.message, 'chore: complete repository initialization') &&
        !contains(github.event.head_commit.message, 'chore: clean up template files after initialization'))
     runs-on: ubuntu-latest
@@ -81,7 +81,7 @@ jobs:
           echo "🔍 Debug: Repository variable INITIALIZATION_COMPLETE = '${{ vars.INITIALIZATION_COMPLETE }}'"
           echo "🔍 Debug: Workflow input initialization_complete = '${{ inputs.initialization_complete }}'"
           echo "🔍 Debug: Workflow input post_init = '${{ inputs.post_init }}'"
-
+          
           INITIALIZED=false
 
           if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.initialization_complete }}" = "true" ]; then
@@ -100,7 +100,7 @@ jobs:
               echo "✅ Initialization detected via structural indicators"
             fi
           fi
-
+          
           if [ "$INITIALIZED" = "true" ]; then
             echo "initialized=true" >> $GITHUB_OUTPUT
             echo "✅ Repository is initialized"
@@ -117,13 +117,25 @@ jobs:
     outputs:
       is_initialized: ${{ steps.check_init.outputs.initialized }}
       is_java_repo: ${{ steps.check_init.outputs.is_java }}
-      service_name: ${{ steps.check_init.outputs.service_name }}
       archetype: ${{ steps.check_init.outputs.archetype }}
       source_path: ${{ steps.check_init.outputs.source_path }}
       node_version: ${{ steps.check_init.outputs.node_version }}
       python_version: ${{ steps.check_init.outputs.python_version }}
+      airflow_version: ${{ steps.check_init.outputs.airflow_version }}
+      dag_path: ${{ steps.check_init.outputs.dag_path }}
+      dag_id: ${{ steps.check_init.outputs.dag_id }}
       image_context: ${{ steps.check_init.outputs.image_context }}
       image_dockerfile: ${{ steps.check_init.outputs.image_dockerfile }}
+      image_platforms: ${{ steps.check_init.outputs.image_platforms }}
+      companion_kind: ${{ steps.check_init.outputs.companion_kind }}
+      companion_package_suffix: ${{ steps.check_init.outputs.companion_package_suffix }}
+      companion_source_path: ${{ steps.check_init.outputs.companion_source_path }}
+      companion_python_version: ${{ steps.check_init.outputs.companion_python_version }}
+      companion_airflow_version: ${{ steps.check_init.outputs.companion_airflow_version }}
+      companion_dag_path: ${{ steps.check_init.outputs.companion_dag_path }}
+      companion_dag_id: ${{ steps.check_init.outputs.companion_dag_id }}
+      companion_image_context: ${{ steps.check_init.outputs.companion_image_context }}
+      companion_image_dockerfile: ${{ steps.check_init.outputs.companion_image_dockerfile }}
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # v5.0.1
         with:
@@ -133,31 +145,68 @@ jobs:
         id: check_init
         run: |
           set -euo pipefail
-          service_name="${{ vars.SERVICE_NAME || github.event.repository.name }}"
           if [ -f ".spi/service.yaml" ]; then
             python3 .github/actions/acceptance-resolver/resolve.py \
               --contract-only --descriptor .spi/service.yaml --report "$RUNNER_TEMP/service.json"
-            service_name=$(jq -r '.service_config.name' "$RUNNER_TEMP/service.json")
             archetype=$(jq -r '.service_config.archetype' "$RUNNER_TEMP/service.json")
             source_path=$(jq -r '.service_config.source_path' "$RUNNER_TEMP/service.json")
             node_version=$(jq -r '.service_config.node_version' "$RUNNER_TEMP/service.json")
             python_version=$(jq -r '.service_config.python_version' "$RUNNER_TEMP/service.json")
+            airflow_version=$(jq -r '.service_config.airflow_version' "$RUNNER_TEMP/service.json")
+            dag_path=$(jq -r '.service_config.dag_path' "$RUNNER_TEMP/service.json")
+            dag_id=$(jq -r '.service_config.dag_id' "$RUNNER_TEMP/service.json")
             image_context=$(jq -r '.service_config.image.context' "$RUNNER_TEMP/service.json")
             image_dockerfile=$(jq -r '.service_config.image.dockerfile' "$RUNNER_TEMP/service.json")
+            image_platforms=$(jq -r '.service_config.image.platforms' "$RUNNER_TEMP/service.json")
+            companion_kind=$(jq -r '.service_config.companion.kind' "$RUNNER_TEMP/service.json")
+            companion_package_suffix=$(jq -r '.service_config.companion.package_suffix' "$RUNNER_TEMP/service.json")
+            companion_source_path=$(jq -r '.service_config.companion.source_path' "$RUNNER_TEMP/service.json")
+            companion_python_version=$(jq -r '.service_config.companion.python_version' "$RUNNER_TEMP/service.json")
+            companion_airflow_version=$(jq -r '.service_config.companion.airflow_version' "$RUNNER_TEMP/service.json")
+            companion_dag_path=$(jq -r '.service_config.companion.dag_path' "$RUNNER_TEMP/service.json")
+            companion_dag_id=$(jq -r '.service_config.companion.dag_id' "$RUNNER_TEMP/service.json")
+            companion_image_context=$(jq -r '.service_config.companion.image.context' "$RUNNER_TEMP/service.json")
+            companion_image_dockerfile=$(jq -r '.service_config.companion.image.dockerfile' "$RUNNER_TEMP/service.json")
           elif [ -f "pom.xml" ] || [ -n "$(find . -name 'pom.xml' -type f)" ]; then
             archetype=java-maven-azure
             source_path=.
             node_version=
             python_version=
+            airflow_version=
+            dag_path=
+            dag_id=
             image_context=.
             image_dockerfile=build/Dockerfile
+            image_platforms=
+            companion_kind=
+            companion_package_suffix=
+            companion_source_path=
+            companion_python_version=
+            companion_airflow_version=
+            companion_dag_path=
+            companion_dag_id=
+            companion_image_context=
+            companion_image_dockerfile=
           else
             archetype=
             source_path=
             node_version=
             python_version=
+            airflow_version=
+            dag_path=
+            dag_id=
             image_context=
             image_dockerfile=
+            image_platforms=
+            companion_kind=
+            companion_package_suffix=
+            companion_source_path=
+            companion_python_version=
+            companion_airflow_version=
+            companion_dag_path=
+            companion_dag_id=
+            companion_image_context=
+            companion_image_dockerfile=
           fi
 
           if [ -n "$archetype" ] && [ -d "$source_path" ]; then
@@ -170,13 +219,25 @@ jobs:
           else
             echo "is_java=false" >> $GITHUB_OUTPUT
           fi
-          echo "service_name=$service_name" >> $GITHUB_OUTPUT
           echo "archetype=$archetype" >> $GITHUB_OUTPUT
           echo "source_path=$source_path" >> $GITHUB_OUTPUT
           echo "node_version=$node_version" >> $GITHUB_OUTPUT
           echo "python_version=$python_version" >> $GITHUB_OUTPUT
+          echo "airflow_version=$airflow_version" >> $GITHUB_OUTPUT
+          echo "dag_path=$dag_path" >> $GITHUB_OUTPUT
+          echo "dag_id=$dag_id" >> $GITHUB_OUTPUT
           echo "image_context=$image_context" >> $GITHUB_OUTPUT
           echo "image_dockerfile=$image_dockerfile" >> $GITHUB_OUTPUT
+          echo "image_platforms=$image_platforms" >> $GITHUB_OUTPUT
+          echo "companion_kind=$companion_kind" >> $GITHUB_OUTPUT
+          echo "companion_package_suffix=$companion_package_suffix" >> $GITHUB_OUTPUT
+          echo "companion_source_path=$companion_source_path" >> $GITHUB_OUTPUT
+          echo "companion_python_version=$companion_python_version" >> $GITHUB_OUTPUT
+          echo "companion_airflow_version=$companion_airflow_version" >> $GITHUB_OUTPUT
+          echo "companion_dag_path=$companion_dag_path" >> $GITHUB_OUTPUT
+          echo "companion_dag_id=$companion_dag_id" >> $GITHUB_OUTPUT
+          echo "companion_image_context=$companion_image_context" >> $GITHUB_OUTPUT
+          echo "companion_image_dockerfile=$companion_image_dockerfile" >> $GITHUB_OUTPUT
 
   check-paths:
     name: "Check Paths"
@@ -313,7 +374,7 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
           cache: 'maven'
-
+          
       - name: Cache Maven packages
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
         with:
@@ -322,7 +383,7 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-m2-
 
-
+          
       - name: Setup Maven Settings
         run: |
           if [ -f ".mvn/community-maven.settings.xml" ]; then
@@ -332,7 +393,7 @@ jobs:
           else
             echo "📝 No custom Maven settings found, using defaults"
           fi
-
+        
       - name: "Run Java Build"
         id: build
         uses: ./.github/actions/java-build
@@ -382,7 +443,8 @@ jobs:
     needs: [check-initialization, check-repo-state, check-paths]
     if: |
       needs.check-repo-state.outputs.is_initialized == 'true' &&
-      needs.check-repo-state.outputs.archetype == 'python-fastapi-azure' &&
+      (needs.check-repo-state.outputs.archetype == 'python-fastapi-azure' ||
+       needs.check-repo-state.outputs.archetype == 'airflow-dag-azure') &&
       needs.check-paths.outputs.should_run == 'true' &&
       github.actor != 'dependabot[bot]'
     runs-on: ubuntu-latest
@@ -410,13 +472,16 @@ jobs:
         with:
           working_directory: ${{ needs.check-repo-state.outputs.source_path }}
           python_version: ${{ needs.check-repo-state.outputs.python_version }}
+          airflow_version: ${{ needs.check-repo-state.outputs.airflow_version }}
+          dag_path: ${{ needs.check-repo-state.outputs.dag_path }}
+          dag_id: ${{ needs.check-repo-state.outputs.dag_id }}
 
-  cpp-build:
-    name: "C++ Build"
+  native-container-build:
+    name: "Native Container Build"
     needs: [check-initialization, check-repo-state, check-paths]
     if: |
       needs.check-repo-state.outputs.is_initialized == 'true' &&
-      needs.check-repo-state.outputs.archetype == 'cpp-cmake-azure' &&
+      needs.check-repo-state.outputs.archetype == 'native-container-azure' &&
       needs.check-paths.outputs.should_run == 'true' &&
       github.actor != 'dependabot[bot]'
     runs-on: ubuntu-latest
@@ -438,11 +503,49 @@ jobs:
           git fetch origin main --depth=1
           git checkout origin/main -- .github/actions/
 
-      - name: "Run C++ Build"
+      - name: "Run Native Container Build"
         id: build
-        uses: ./.github/actions/cpp-build
+        uses: ./.github/actions/native-container-build
         with:
-          working_directory: ${{ needs.check-repo-state.outputs.source_path }}
+          build_context: ${{ needs.check-repo-state.outputs.image_context }}
+          dockerfile_path: ${{ needs.check-repo-state.outputs.image_dockerfile }}
+
+  companion-python-build:
+    name: "Companion Airflow Build"
+    needs: [check-initialization, check-repo-state, check-paths]
+    if: |
+      needs.check-repo-state.outputs.is_initialized == 'true' &&
+      needs.check-repo-state.outputs.companion_kind == 'airflow-dag' &&
+      needs.check-paths.outputs.should_run == 'true' &&
+      github.actor != 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    outputs:
+      build_result: ${{ steps.build.outputs.build_result }}
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # v5.0.1
+        with:
+          ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+
+      - name: "Restore local actions for sync PRs"
+        if: |
+          github.event_name == 'pull_request_target' &&
+          github.event.pull_request.base.ref == 'fork_upstream' &&
+          startsWith(github.event.pull_request.head.ref, 'sync/')
+        run: |
+          set -euo pipefail
+          git fetch origin main --depth=1
+          git checkout origin/main -- .github/actions/
+
+      - name: "Run Companion Airflow Build"
+        id: build
+        uses: ./.github/actions/python-build
+        with:
+          working_directory: ${{ needs.check-repo-state.outputs.companion_source_path }}
+          python_version: ${{ needs.check-repo-state.outputs.companion_python_version }}
+          airflow_version: ${{ needs.check-repo-state.outputs.companion_airflow_version }}
+          dag_path: ${{ needs.check-repo-state.outputs.companion_dag_path }}
+          dag_id: ${{ needs.check-repo-state.outputs.companion_dag_id }}
 
   docker-build:
     # Validate-only build of both images; the trusted push is docker-push and the required check
@@ -451,15 +554,18 @@ jobs:
     # No pull_request_target lane and no checkout ref: a PR-head ref in a read-only job is a CodeQL
     # cache-poisoning finding in every fork (#164). Sync PRs get their image validated on the cascade PR.
     name: "Docker Build"
-    needs: [check-initialization, check-repo-state, java-build, node-build, python-build, cpp-build]
+    needs: [check-initialization, check-repo-state, java-build, node-build, python-build, native-container-build, companion-python-build]
     if: |
       always() &&
       (needs.java-build.outputs.build_result == 'success' ||
        needs.node-build.outputs.build_result == 'success' ||
        needs.python-build.outputs.build_result == 'success' ||
-       needs.cpp-build.outputs.build_result == 'success') &&
+       needs.native-container-build.outputs.build_result == 'success') &&
+      (needs.check-repo-state.outputs.companion_kind == '' ||
+       needs.companion-python-build.outputs.build_result == 'success') &&
       github.event_name != 'pull_request_target' &&
       (vars.SYNC_MODE == 'mirror' || vars.SYNC_MODE == 'passthrough' ||
+       vars.SYNC_MODE == 'snapshot' ||
        (github.base_ref != 'fork_upstream' && github.ref_name != 'fork_upstream'))
     runs-on: ubuntu-latest
     permissions:
@@ -471,38 +577,51 @@ jobs:
         uses: ./.github/actions/docker-build
         with:
           push: 'false'
-          image_name: ${{ needs.check-repo-state.outputs.service_name }}
+          image_name: ${{ vars.SERVICE_NAME || github.event.repository.name }}
           build_kind: ${{ needs.check-repo-state.outputs.archetype == 'java-maven-azure' && 'maven-jar' || (needs.check-repo-state.outputs.archetype == 'node-typescript-azure' && 'source' || 'source-direct') }}
           build_context: ${{ needs.check-repo-state.outputs.image_context }}
           dockerfile_path: ${{ needs.check-repo-state.outputs.image_dockerfile }}
+          platforms: ${{ needs.check-repo-state.outputs.image_platforms }}
           # Conventional JAR path; the action auto-discovers the Azure JAR when a deviant module name
           # (e.g. entitlements-v2-azure) does not match. SERVICE_TARGET_JAR forces a path (ADR-037).
-          jar_file: ${{ vars.SERVICE_TARGET_JAR || format('provider/{0}-azure/target/*-spring-boot.jar', needs.check-repo-state.outputs.service_name) }}
+          jar_file: ${{ vars.SERVICE_TARGET_JAR || format('provider/{0}-azure/target/*-spring-boot.jar', vars.SERVICE_NAME || github.event.repository.name) }}
+
+      - name: "Companion Image"
+        if: needs.check-repo-state.outputs.companion_kind != ''
+        uses: ./.github/actions/docker-build
+        with:
+          push: 'false'
+          image_name: ${{ format('{0}{1}', vars.SERVICE_NAME || github.event.repository.name, needs.check-repo-state.outputs.companion_package_suffix) }}
+          build_kind: source-direct
+          build_context: ${{ needs.check-repo-state.outputs.companion_image_context }}
+          dockerfile_path: ${{ needs.check-repo-state.outputs.companion_image_dockerfile }}
 
       - name: "Acceptance Image"
         # Proves every suite's prewarm build before the trusted lane bakes it; skips when no suite exists.
         uses: ./.github/actions/acceptance-image
         with:
           push: 'false'
-          image_name: ${{ needs.check-repo-state.outputs.service_name }}
+          image_name: ${{ vars.SERVICE_NAME || github.event.repository.name }}
 
       - name: "Load Image"
         # Proves the loader image builds when the checkout carries deployments/shared-schemas; skips otherwise.
         uses: ./.github/actions/load-image
         with:
           push: 'false'
-          image_name: ${{ needs.check-repo-state.outputs.service_name }}
+          image_name: ${{ vars.SERVICE_NAME || github.event.repository.name }}
 
   docker-push:
     name: "Docker Push"
-    needs: [check-initialization, check-repo-state, java-build, node-build, python-build, cpp-build, docker-build]
+    needs: [check-initialization, check-repo-state, java-build, node-build, python-build, native-container-build, companion-python-build, docker-build]
     # Trust boundary (ADR-036): push to GHCR only on trusted events.
     if: |
       always() && (
         (needs.java-build.outputs.build_result == 'success' ||
          needs.node-build.outputs.build_result == 'success' ||
          needs.python-build.outputs.build_result == 'success' ||
-         needs.cpp-build.outputs.build_result == 'success') &&
+         needs.native-container-build.outputs.build_result == 'success') &&
+        (needs.check-repo-state.outputs.companion_kind == '' ||
+         needs.companion-python-build.outputs.build_result == 'success') &&
         github.actor != 'dependabot[bot]' &&
         github.event_name != 'pull_request_target' &&
         github.event_name != 'workflow_dispatch' &&
@@ -520,6 +639,8 @@ jobs:
     outputs:
       image_repository: ${{ steps.push.outputs.image_repository }}
       image_digest: ${{ steps.push.outputs.image_digest }}
+      companion_image_repository: ${{ steps.companion.outputs.image_repository }}
+      companion_image_digest: ${{ steps.companion.outputs.image_digest }}
       acceptance_image_repository: ${{ steps.acceptance.outputs.image_repository }}
       acceptance_image_digest: ${{ steps.acceptance.outputs.image_digest }}
       acceptance_skipped: ${{ steps.acceptance.outputs.skipped }}
@@ -533,12 +654,25 @@ jobs:
         uses: ./.github/actions/docker-build
         with:
           push: 'true'
-          image_name: ${{ needs.check-repo-state.outputs.service_name }}
+          image_name: ${{ vars.SERVICE_NAME || github.event.repository.name }}
           build_kind: ${{ needs.check-repo-state.outputs.archetype == 'java-maven-azure' && 'maven-jar' || (needs.check-repo-state.outputs.archetype == 'node-typescript-azure' && 'source' || 'source-direct') }}
           build_context: ${{ needs.check-repo-state.outputs.image_context }}
           dockerfile_path: ${{ needs.check-repo-state.outputs.image_dockerfile }}
+          platforms: ${{ needs.check-repo-state.outputs.image_platforms }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          jar_file: ${{ vars.SERVICE_TARGET_JAR || format('provider/{0}-azure/target/*-spring-boot.jar', needs.check-repo-state.outputs.service_name) }}
+          jar_file: ${{ vars.SERVICE_TARGET_JAR || format('provider/{0}-azure/target/*-spring-boot.jar', vars.SERVICE_NAME || github.event.repository.name) }}
+
+      - name: "Companion Image Build and Push"
+        id: companion
+        if: needs.check-repo-state.outputs.companion_kind != ''
+        uses: ./.github/actions/docker-build
+        with:
+          push: 'true'
+          image_name: ${{ format('{0}{1}', vars.SERVICE_NAME || github.event.repository.name, needs.check-repo-state.outputs.companion_package_suffix) }}
+          build_kind: source-direct
+          build_context: ${{ needs.check-repo-state.outputs.companion_image_context }}
+          dockerfile_path: ${{ needs.check-repo-state.outputs.companion_image_dockerfile }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: "Acceptance Image Build and Push"
         # The suite ships as ghcr.io/<org>/<svc>-acceptance:sha-<sha> from the same commit as the
@@ -547,7 +681,7 @@ jobs:
         uses: ./.github/actions/acceptance-image
         with:
           push: 'true'
-          image_name: ${{ needs.check-repo-state.outputs.service_name }}
+          image_name: ${{ vars.SERVICE_NAME || github.event.repository.name }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: "Load Image Build and Push"
@@ -557,7 +691,7 @@ jobs:
         uses: ./.github/actions/load-image
         with:
           push: 'true'
-          image_name: ${{ needs.check-repo-state.outputs.service_name }}
+          image_name: ${{ vars.SERVICE_NAME || github.event.repository.name }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
 
   deploy-gate:
@@ -604,7 +738,8 @@ jobs:
           [ -n "$reason" ] || [ "$REF" != "fork_upstream" ] || reason="fork_upstream builds no Azure image"
           [ -n "$reason" ] || [ -z "${MISSING// /}" ] || reason="repository is not onboarded to a stack (missing: $(echo $MISSING))"
           [ -n "$reason" ] || [ -f .spi/service.yaml ] || reason="no .spi/service.yaml declares the suites"
-          # The stack and image jobs use the descriptor's service.name.
+          # The stack knows the descriptor's service.name. The image name (SERVICE_NAME, or the
+          # repository name when unset) differs from it where repositories are prefixed (osdu-spi-<service>).
           # Resolved before the push checks: a rejected descriptor already failed docker-build, and
           # the gate names the rejection rather than the missing image it caused.
           service=""
@@ -908,7 +1043,7 @@ jobs:
 
   code-validation:
     name: "Check Code Quality"
-    needs: [check-initialization, check-repo-state, check-paths, java-build, node-build, python-build, cpp-build]
+    needs: [check-initialization, check-repo-state, check-paths, java-build, node-build, python-build]
     if: |
       always() &&
       needs.check-initialization.outputs.initialized == 'true'
@@ -938,9 +1073,6 @@ jobs:
             exit 1
           fi
           echo "✅ Local actions restored - validation can proceed"
-
-      - name: "Validate SPI C++ fork contract"
-        run: python3 .spi/ci/validate.py
 
       - name: "Validate Commit Messages"
         if: |
@@ -972,7 +1104,7 @@ jobs:
             ci
             chore
             revert
-
+        
       - name: "Check for Merge Conflicts"
         run: |
           if git diff --check; then
@@ -981,7 +1113,7 @@ jobs:
             echo "::error::Conflict markers found in files"
             exit 1
           fi
-
+          
       - name: "Verify Branch Status"
         if: github.event_name == 'pull_request'
         env:
@@ -1018,7 +1150,7 @@ jobs:
     # wedges the PR, and one table shows what ran, what was skipped, and why. always() bypasses
     # check-initialization's routing, so the lane test is repeated here.
     name: "Validation Summary"
-    needs: [check-initialization, check-repo-state, check-paths, java-build, node-build, python-build, cpp-build, docker-build, docker-push, deploy-gate, deploy-test, code-validation]
+    needs: [check-initialization, check-repo-state, check-paths, java-build, node-build, python-build, native-container-build, companion-python-build, docker-build, docker-push, deploy-gate, deploy-test, code-validation]
     if: |
       always() &&
       (github.event_name != 'pull_request' ||
@@ -1058,11 +1190,13 @@ jobs:
               def names: {
                 "check-initialization": "Check Initialization", "check-repo-state": "Check Repository",
                 "check-paths": "Check Paths", "java-build": "Java Build", "node-build": "Node Build",
-                "python-build": "Python Build", "cpp-build": "C++ Build", "docker-build": "Docker Build",
+                "python-build": "Python Build", "native-container-build": "Native Container Build",
+                "companion-python-build": "Companion Airflow Build",
+                "docker-build": "Docker Build",
                 "code-validation": "Check Code Quality", "docker-push": "Docker Push",
                 "deploy-gate": "Deploy Gate", "deploy-test": "Deploy and Test"};
               def icon: {success: "✅", failure: "❌", cancelled: "⚠️", skipped: "⏭️"}[.] // .;
-              def build: . == "java-build" or . == "node-build" or . == "python-build" or . == "cpp-build" or . == "docker-build" or . == "docker-push";
+              def build: . == "java-build" or . == "node-build" or . == "python-build" or . == "native-container-build" or . == "companion-python-build" or . == "docker-build" or . == "docker-push";
               def note:
                 if . == "deploy-test" and $gate != "" then $gate
                 elif $needs[.].result != "skipped" then ""
@@ -1070,8 +1204,9 @@ jobs:
                 elif build and $relevant == "false" then "only configuration or docs changed"
                 elif . == "java-build" and $archetype != "java-maven-azure" then "archetype is \($archetype)"
                 elif . == "node-build" and $archetype != "node-typescript-azure" then "archetype is \($archetype)"
-                elif . == "python-build" and $archetype != "python-fastapi-azure" then "archetype is \($archetype)"
-                elif . == "cpp-build" and $archetype != "cpp-cmake-azure" then "archetype is \($archetype)"
+                elif . == "python-build" and ($archetype != "python-fastapi-azure" and $archetype != "airflow-dag-azure") then "archetype is \($archetype)"
+                elif . == "native-container-build" and $archetype != "native-container-azure" then "archetype is \($archetype)"
+                elif . == "companion-python-build" then "no Airflow DAG companion declared"
                 elif build and $archetype == "" then "service archetype is unavailable"
                 elif build and $event == "pull_request_target" then "sync lane; images validate on the cascade PR"
                 elif . == "docker-push" and $actor == "dependabot[bot]" then "Dependabot validates through dependabot-validation.yml"
