@@ -1,0 +1,6 @@
+{
+    "DataPartitions":
+    {
+        "PartitionMode": "$ENV{RDMS_DATA_PARTITION_MODE}"
+    }
+}

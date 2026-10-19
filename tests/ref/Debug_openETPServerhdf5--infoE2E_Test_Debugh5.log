@@ -1,0 +1,49 @@
+Info:                192 Groups
+Info:                197 Datasets
+Info:             28,502 Group header bytes
+Info:             55,948 Dataset header bytes
+Info:             13,821 Group (index & heap) bytes
+Info:          4,623,320 Dataset (index & heap) bytes
+Info: 
+      <<< Datasets by 'overhead' size-range >>>
+Info:                  0 (     1 -      2] bytes
+Info:                  0 (     2 -      4] bytes
+Info:                  0 (     4 -      8] bytes
+Info:                  0 (     8 -     16] bytes
+Info:                  0 (    16 -     32] bytes
+Info:                  0 (    32 -     64] bytes
+Info:                  0 (    64 -    128] bytes
+Info:                  0 (   128 -    256] bytes
+Info:                  0 (   256 -    512] bytes
+Info:                  0 (   512 -  1,024] bytes
+Info:                  0 ( 1,024 -  2,048] bytes
+Info:                 33 ( 2,048 -  4,096] bytes
+Info:                  5 ( 4,096 -  8,192] bytes
+Info:                  0 ( 8,192 - 16,384] bytes
+Info:                157 (16,384 - 32,768] bytes
+Info:                  2 (32,768 - 65,536] bytes
+Info: 
+      <<< Datasets by name - Top 10 >>>
+Info:                  1 CellIndexPairs
+Info:                  1 LocalFacePerCellIndexPairs
+Info:                  1 Points
+Info:                  1 cellGeometryIsDefined
+Info:                  2 cumulativeLength
+Info:                  2 elements
+Info:                  1 nodeIsColocatedOnKEdge
+Info:                  1 pillarGeometryIsDefined
+Info:                 28 subRepresentationPatch0
+Info:                158 values_patch0
+Info: 
+       <<< Dataset 'overhead' size - Top 10 >>>
+Info:             59,584 RESQML/d6f43026-e0cd-482d-83b5-63e6ea1e8c84/Points
+Info:             37,728 RESQML/d6f43026-e0cd-482d-83b5-63e6ea1e8c84/nodeIsColocatedOnKEdge
+Info:             28,224 RESQML/ff31db15-b147-4260-80dd-20093bcf853d/values_patch0
+Info:             28,224 RESQML/3fd3cf8e-57cc-474e-8952-faa289a00629/values_patch0
+Info:             28,224 RESQML/4fec26a2-f290-40c6-9cfa-070b9d1fbe27/values_patch0
+Info:             28,224 RESQML/2b0a25ab-6906-493f-9cc2-c10b4c5abea9/values_patch0
+Info:             28,224 RESQML/e8bbe54d-5cf1-46a7-ad36-13ef32d99639/values_patch0
+Info:             28,224 RESQML/4392e5d4-e4cb-4b40-9c47-502a530cc4d8/values_patch0
+Info:             28,224 RESQML/ee71915e-b146-474f-b6a3-f7c1494347e6/values_patch0
+Info:             28,224 RESQML/6aa67b9f-7ce8-4a52-b42c-05045bbcd454/values_patch0
+Info: openETPServer: done.

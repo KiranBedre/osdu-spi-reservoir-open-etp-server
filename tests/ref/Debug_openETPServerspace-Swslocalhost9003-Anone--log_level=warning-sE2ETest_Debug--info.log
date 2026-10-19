@@ -1,0 +1,13 @@
+Warning: 
+Dataspace E2E/Test_Debug:
+           URI: eml:///dataspace('E2E/Test_Debug')
+           Uid: E2E/Test_Debug
+          Path: E2E/Test_Debug
+       Created: Mon Jan 00 00:00:00 0000
+ Last-Modified: Mon Jan 00 00:00:00 0000
+
+Warning: 3 custom data:
+Warning:         locked: false
+Warning:      read-only: false
+Warning:           size: 232 kB
+

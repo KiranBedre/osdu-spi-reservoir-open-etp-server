@@ -1,0 +1,71 @@
+{
+  "name": "open-etp-server",
+  "homepage": "https://community.opengroup.org/osdu/platform/domain-data-mgmt-services/reservoir/open-etp-server",
+  "description": "OpenETPServer is the open-source implementation of the Reservoir Domain Data Management Services (Reservoir DDMS) which is one of the backend services and a part of the Open Subsurface Data Universe (OSDU) software ecosystem. OpenETPServer is a single, containerized service written in C++ which stores reservoir data in the RESQML format inside a PostgreSQL database.",
+  "dependencies": [
+    "avro-cpp",
+    "azure-core-cpp",
+    "azure-identity-cpp",
+    "boost-core",
+    "boost-crc",
+    "boost-asio",
+    "boost-accumulators",
+    "boost-beast",
+    "boost-endian",
+    "boost-scope-exit",
+    "boost-iostreams",
+    "boost-process",
+    "boost-preprocessor",
+    "boost-program-options",
+    "boost-regex",
+    "boost-uuid",
+    "boost-system",
+    "boost-test",
+    "curl",
+    "cpp-jwt",
+    "date",
+    "fmt",
+    "nlohmann-json",
+    "prometheus-cpp",
+    {
+      "name": "hdf5",
+      "features": [ "szip", "zlib", "cpp" ]
+    },
+    "openssl",
+    "readerwriterqueue",
+    "zlib",
+    "minizip",
+    "libpq",
+    "websocketpp",
+    "gtest",
+    {
+      "name": "google-cloud-cpp",
+      "default-features": false,
+      "features": ["storage"]
+    },
+    "benchmark",
+    {
+      "name": "opentelemetry-cpp",
+      "features": [ "otlp-http" ]
+    },
+    "tinyxml2"
+  ],
+  "$builtin-baseline-comment": "Corresponds to tag '2024.09.30'",
+  "builtin-baseline": "c82f74667287d3dc386bce81e44964370c91a289",
+  "overrides": [
+    {
+      "name": "hdf5",
+      "version": "1.10.5-12",
+      "$comment": "Later versions of hdf5 are in theory backwards compatible if you build with -DH5_USE_110_API, but in practice this still had breaking changes"
+    },
+    {
+      "name": "szip",
+      "version": "2.1.1#12",
+      "$comment": "This is a dependency of HDF5 1.10 and must be manually specified when using baselines after tag 2024.09.30 since szip has now been removed from VCPKG"
+    },
+    {
+      "name": "google-cloud-cpp",
+      "version": "2.4.0"
+    }
+  ]
+}

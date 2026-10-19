@@ -1,0 +1,72 @@
+Info: 
+Usage: openETPServer [global-options] server --start -d conn_string [options]
+
+Actions:
+  -h [ --help ]                         Display this information
+  --init                                Initialize main DB
+  --check                               Check main DB
+  --start                               Start ETP 1.2 server
+
+Options:
+  -P [ --port ] arg (=9002)             Specify port to listen to
+  --reuseAddressSocket arg (=1)         Reuse socket address. Allows reusing 
+                                        socket port
+                                        shortly after previous server instance 
+                                        stopped.
+  --stopOnLastDisconnection arg (=1)    Stop when last client disconnect
+  --ipv4 arg (=0)                       Use ipv4 protocol instead of ipv6
+  --maxConnections arg (=-1)            Specify maximum number of connections
+  -d [ --db-connection ] arg            PostgreSQL connection string (If not 
+                                        defined, will use POSTGRESQL_CONN_STRIN
+                                        G environment variable
+  --pg-bulk-size arg (=100)             PostgreSQL default bulk size
+  -s [ --space-path ] arg               ETP dataspace name (folder or 
+                                        folder/project)
+  --space-guid arg                      ETP dataspace guid (uses path if 
+                                        omitted)
+  --xdata-file arg                      New Space meta-data as JSON file (on 
+                                        EPC Direct-import)
+  --xdata arg                           New Space meta-data as JSON (on EPC 
+                                        Direct-import)
+  --vacuum                              Vacuum (i.e. optimize) DB, post EPC 
+                                        Direct-import
+  --no-default-space                    Omit ETP 1.2 mandatory 'default' 
+                                        dataspace on --init
+  --overwrite                           Overwrite existing EPC on Direct-import
+  --check-activities arg (=1)           Check if new data has corresponding 
+                                        activity
+  --auth arg                            Deprecated: Legacy name of authN
+  -N [ --authN ] arg (=builtin)         Authentication: 'none', 'builtin', or 
+                                        'delegate=URL'
+  --authZ arg (=none)                   Authorization:  'none', 'builtin',
+                                        'delegate=URL', or 'policyDelegate=URL'
+  -k [ --jwt-secret ] arg               JWT Signing Key (--authN=builtin only).
+  -j [ --jobs ] [=arg(=0)]              How many worker-threads:
+                                        * not specified: Defaults to 
+                                        single-threaded;
+                                        * -j: Use as many threads as hardware 
+                                        cores;
+                                        * -jN: Use exactly N threads
+  --force                               Continue instead of exit, on some 
+                                        warnings/errors
+
+Connect Options:
+  -S [ --server-url ] arg               ETP 1.2 server URL
+  --etp-trace arg                       Trace ETP messages to file
+                                        Filename inferred if empty or directory
+  --timeout arg (=10s,10s)              ETP timeouts for CONNECT and GET/PUT 
+                                        requests
+  -M [ --max-msg-size ] arg (=16MB, 128MB)
+                                        Maximum WebSocket message size(s) in 
+                                        bytes
+  -B [ --max-batch-size ] arg (=1000000)
+                                        Maximum parts per multi-part message
+  -Q [ --msg-queue-depth ] arg (=500)   Deprecated: Maximum concurrent 
+                                        (in-flight) messages
+  --acknowledge                         Set Acknowledge flag on all ETP 
+                                        requests
+  -Z [ --compress ] arg (=gzip)         Set Compress-Body flag on all ETP 
+                                        requests
+                                        Specify compressor(s) (Default: gzip)
+  --shun-protocols arg                  Force client to ignore those protocols
+

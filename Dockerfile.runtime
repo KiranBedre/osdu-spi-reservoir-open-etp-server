@@ -1,0 +1,20 @@
+FROM ubuntu:22.04
+
+ARG VERSION=0.1
+ARG DIST=./build/using_docker/dist/
+ARG BUILD_NUMBER="unknown"
+ARG BUILD_DATE="unknown"
+
+LABEL version="${VERSION}"
+LABEL vendor="OSDU Reservoir DDMS"
+LABEL description="Open ETP Server Runtime Image"
+LABEL build-number=${BUILD_NUMBER}
+LABEL build-date=${BUILD_DATE}
+
+RUN apt update && apt upgrade -y && apt install -y wget
+
+ADD ${DIST} /usr/
+
+EXPOSE 9002
+
+CMD [ "openETPServer", "server", "-h" ]

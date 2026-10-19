@@ -1,0 +1,72 @@
+FROM ubuntu:22.04
+
+ARG VERSION=0.1 \
+    USE_EXT_VCPKG_CACHE
+
+ARG BUILD_NUMBER="unknown"
+ARG BUILD_DATE="unknown"
+
+LABEL version="${VERSION}"
+LABEL vendor="OSDU Reservoir DDMS"
+LABEL description="Open ETP Server Building Image"
+LABEL build-number=${BUILD_NUMBER}
+LABEL build-date=${BUILD_DATE}
+
+VOLUME \
+    # Source directory for OpenETPServer
+    /source \
+    # VCPKG external binary cache
+    /vcpkg_cache
+
+RUN apt-get update && \
+    apt-get upgrade -y && \
+# Define DEBIAN_FRONTEND to allow non interactive installation of some packages
+    DEBIAN_FRONTEND=noninteractive \
+    apt-get install -y --no-install-recommends \
+    ca-certificates \
+# Build system packages
+    # VCPKG prerequisites
+        git \
+        build-essential tar curl zip unzip \
+        pkg-config \
+    ninja-build=1.1* \
+    libgomp1=12* \
+    cmake=3.* \
+    gdb \
+    curl \
+# libpq requires these packages
+    autoconf \
+    bison \
+    flex \
+# For code coverage
+    gcovr \
+# For the beauty of the output
+    figlet \
+# Tools for static code analysis
+    clang-tidy \
+    cppcheck \
+&& apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Install VCPKG manager
+ENV VCPKG_ROOT="$HOME/vcpkg" \
+    # Enable external VCPKG binary cache when passed arg USE_EXT_VCPKG_CACHE (uses volume "/vcpkg_cache")
+    VCPKG_DEFAULT_BINARY_CACHE=${USE_EXT_VCPKG_CACHE:+/vcpkg_cache}
+
+# Specify the commit sha with the same builtin-baseline in vcpkg
+# If builtin-baseline changed, please change here as well
+ARG VCPKG_COMMIT=c82f74667287d3dc386bce81e44964370c91a289
+RUN mkdir $VCPKG_ROOT \
+    && git clone "https://github.com/Microsoft/vcpkg.git" $VCPKG_ROOT 
+    
+WORKDIR ${VCPKG_ROOT}
+RUN git checkout ${VCPKG_COMMIT} \
+    && $VCPKG_ROOT/bootstrap-vcpkg.sh \
+    && chmod -R 777 $VCPKG_ROOT
+    
+
+####################################################
+
+WORKDIR /source
+EXPOSE 9002
+
+CMD [ "bash", "-c", "devops/scripts/build_inside_docker.sh" ]

@@ -1,0 +1,24 @@
+Info: 
+Usage: openETPServer [global-options] hdf5 --info file.h5
+Usage: openETPServer [global-options] hdf5 --diff file1.h5 --with file2.h5
+
+Actions:
+  -h [ --help ]                     Display this information
+  --info arg                        Prints HDF5 file statistics
+  --stats arg                       Prints per-Dataset-type statistics
+  --diff arg                        Diffs two HDF5 files' dataset's metadata & 
+                                    bytes
+                                    (Ignores chunking, compression, attributes,
+                                    etc...)
+
+Options:
+  --top arg (=10)                   How many entry to list
+  --with arg                        Which HDF5 file to diff against
+  -M [ --max-buf-size ] arg (=1MB)  Maximum buffer size in bytes
+  --force                           Continue instead of exit, on some 
+                                    warnings/errors
+
+OSDU Partition Options:
+  -P [ --data-partition-id ] arg    OSDU data partition name.
+
+Info: openETPServer: done.

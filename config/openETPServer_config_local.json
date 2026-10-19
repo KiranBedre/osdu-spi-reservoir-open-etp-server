@@ -1,0 +1,78 @@
+{
+    "Server":
+    {
+        "EnableAnyNumberOfThreads": "false",
+        "SessionKeepAliveDurationSeconds": "120"
+    },
+    "DataPartitions":
+    {
+        "PartitionMode": "single",
+        "ConnectivityMode": "standalone",
+        "StandaloneConnectionStrings":
+        {
+            "single": "host=localhost port=5432 dbname=openetp user=tester password=tester"
+        }
+    },
+    "Client":
+    {
+        "TransactionRetries": "0"
+    },
+    "OSDU":
+    {
+        "AuthorizationMode": "osdu",
+        "CloudProvider": "az", 
+        "DomainName": "contoso.com", 
+        "KeyVaultUrl": "http://localhost:9080",
+        "PartitionUrl": "http://localhost:9080", 
+        "EntitlementsUrl": "http://localhost:9080", 
+        "StorageUrl": "http://localhost:9080",
+        
+        "DataPartitionID": "local",
+        "SchemaID": "test-schema-id",
+        "LegalTags": "test-legal-tag",
+        "LegalCountries": "test-country",
+        "RecordsPath": "/records",
+        "EvaluatePolicyPath": "/evalute",
+        "AuthorizationBulkSize": "500"
+    },
+    "CloudProviders":
+    {
+        "Azure": {
+            "AzureEnableMsi": "true",
+            "AzureEnablePostgresMsi": "false",
+            "AzurePrincipalSecret": "secret", 
+            "AzurePrincipalID": "test-principal-id", 
+            "AzureAdTenantID": "test-tenant-id", 
+            "AzureAdAppResourceID": "test-res-id",
+            "AzureUseEnvironmentCredentials": "true"
+        },
+        "GC": {
+            
+        },
+        "AWS": {
+            
+        },
+        "CIMPL": {
+            "CImplServiceAccountInformation" :"",
+            "CImplTokenURI": "http://localhost:9080/oauth2/v2.0/token",
+            "CImplClientID": "test-client-id",
+            "CImplClientSecret": "test-client-secret",
+            "CImplGrantType": "client_credentials"
+        }
+    },
+    "Logging":
+    {
+        "LogLevel": "info", 
+        "LogMaxSeverity": "fatal",
+        "LogMinSeverity": "info",
+        "LogFormat": ""
+    },
+    "Telemetry":
+    {
+        "OtelEnabled": "false",
+        "OtelServiceName": "test_service_name",
+        "OtelExporterOtlpEndpoint": "localhost:4318",
+        "OtelContextServerEnabled": "false",
+        "OtelContextServerPort": "8080"
+    }
+}

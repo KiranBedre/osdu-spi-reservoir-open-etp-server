@@ -1,0 +1,14 @@
+{
+    "DataPartitions":
+    {
+        "StandaloneConnectionStrings":
+        {
+            "single": "$ENV{POSTGRESQL_CONN_STRING}"
+        },
+        "PartitionStubIds": "$ENV{STUB_SERVER_PARTITION_IDS}"
+    },
+    "StubServer":
+    {
+        "StubPort":"$ENV{STUB_PORT}"
+    }
+}

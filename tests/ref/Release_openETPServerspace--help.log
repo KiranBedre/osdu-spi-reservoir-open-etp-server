@@ -1,0 +1,117 @@
+Info: 
+Usage: openETPServer [global-options] space --action [args]
+
+Actions:
+  -h [ --help ]                         Display this information
+  -l [ --list ] arg                     List ETP dataspaces (aka Projects)
+  --info                                Show info / details on ETP dataspace
+  --toc arg                             Get Table-of-Contents on ETP dataspace
+                                        Prints Top-N (no argument); or writes 
+                                        JSON file
+  --stats                               Get Statistics on ETP dataspace
+  --array-stats                         Get Statistics on ETP dataspace bulk 
+                                        data arrays
+  --new                                 Create new ETP dataspace
+  --delete                              Delete ETP dataspace
+  --delete-all arg                      Delete All matching ETP dataspaces
+  --lock                                Lock ETP dataspace (set read-only)
+  --unlock                              Unlock ETP dataspace (set read-write)
+  --import-space arg                    Import other ETP dataspace contents
+                                        into this one
+  --import-epc arg                      Import (PUT) EPC file into ETP server
+  --export-epc arg                      Export (GET) EPC file from ETP server
+  --copy                                Copy dataspace by reference OR from 
+                                        remote server. Must provide --by-ref 
+                                        XOR --from-remote
+
+Options:
+  -s [ --space-path ] arg               ETP dataspace path (folder/project)
+  --space-guid arg                      ETP dataspace guid (uses path if 
+                                        omitted)
+  --top arg (=10)                       How many entries to list
+  --skip arg (=0)                       Skip how many entries in the list
+  --utc                                 Show timestamps in UTC, instead of 
+                                        local time
+  --iso                                 Show timestamps in ISO-8601 format
+  --flat                                Do not group ETP dataspaces by folder
+  --since arg                           Filter by Last-Store-Write timestamp.
+                                        (ISO date-time; or duration: 1d, 3m, 
+                                        1y, etc...)
+  --types arg                           Filter TOC by object types (CSV).
+                                        
+  --xdata-file arg                      New Space meta-data as JSON file
+  --xdata arg                           New Space meta-data as JSON
+  --overwrite                           Overwrite existing EPC on export
+  --reject-duplicates                   The import is reject if any importing 
+                                        resource is already in the dataspace
+  --force                               Continue instead of exit, on some 
+                                        warnings/errors
+  -j [ --jobs ] [=arg(=0)]              How many worker-threads:
+                                        * not specified: Defaults to 
+                                        single-threaded;
+                                        * -j: Use as many threads as hardware 
+                                        cores;
+                                        * -jN: Use exactly N threads
+  --array-queue-depth arg (=10)         Max (sub)arrays accumulated in-memory
+                                        (Peak RAM proportional to -M x 
+                                        this-option)
+  -z [ --hdf5-compression ] arg (=3)    Compression level of most datasets:
+                                        0 none; 1 fast but bigger; 9 best but 
+                                        slower
+  --hdf5-large-data-compression arg (=3)
+                                        Compression level of large datasets (3D
+                                        or more):
+                                        0 none; 1 fast but bigger; 9 best but 
+                                        slower
+  --transaction-retries arg (=-1)       Number of retries to try to start a 
+                                        scoped transaction.
+                                        Default is 0 - only one try, no retries
+  --transaction-limit-time arg (=inf)   Minimum amount of time to trigger 
+                                        transaction commit and start a new one 
+                                        when uploading arrays.
+  --transaction-limit-size arg (=inf)   Minimum size to trigger transaction 
+                                        commit and start a new one when 
+                                        uploading arrays.
+  --reconnect-retries arg (=-1)         Maximum number of reconnection retries 
+                                        while uploading arrays
+  --by-ref                              Copy dataspace by reference
+  --from-remote                         Copy dataspace from remote server 
+                                        (--source-server) to the target server 
+                                        (--server-url)
+  --source-partition arg                Original data partition.
+  --source-space arg                    Original dataspace to be copied from.
+  --source-token arg                    Source remote server token
+  --source-server arg                   Source remote server
+
+Connect Options:
+  -S [ --server-url ] arg               ETP 1.2 server URL
+  --etp-trace arg                       Trace ETP messages to file
+                                        Filename inferred if empty or directory
+  --timeout arg (=10s,10s)              ETP timeouts for CONNECT and GET/PUT 
+                                        requests
+  -M [ --max-msg-size ] arg (=1MB)      Maximum WebSocket message size(s) in 
+                                        bytes
+  -B [ --max-batch-size ] arg (=100)    Maximum parts per multi-part message
+  -Q [ --msg-queue-depth ] arg (=500)   Deprecated: Maximum concurrent 
+                                        (in-flight) messages
+  --acknowledge                         Set Acknowledge flag on all ETP 
+                                        requests
+  -Z [ --compress ] [=arg(=gzip)]       Set Compress-Body flag on all ETP 
+                                        requests
+                                        Specify compressor(s) (Default: gzip)
+  --shun-protocols arg                  Force client to ignore those protocols
+
+Authentication Options:
+  -A [ --auth ] arg (=auto)             Authentication method: 'auto, 'none', 
+                                        'basic', 'bearer'.
+  -u [ --username ] arg                 User's name to authenticate with.
+  -p [ --password ] arg                 User's password to authenticate with.
+  -T [ --jwt-token ] arg                Explicit JWT token. Used as-is.
+  -k [ --jwt-secret ] arg               JWT Signing Key. Uses Basic 
+                                        Authentication if omitted.
+  --no-http-headers                     Use URL for AuthN. Emulates 
+                                        Browser-based clients.
+
+OSDU Partition Options:
+  -P [ --data-partition-id ] arg        OSDU data partition name.
+

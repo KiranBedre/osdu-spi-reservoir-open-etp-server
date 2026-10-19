@@ -1,0 +1,90 @@
+{
+    "Server":
+    {
+        "EnableAnyNumberOfThreads": "$ENV{ENABLE_ANY_NUMBER_OF_THREADS}"
+    },
+    "DataPartitions":
+    {
+        "PartitionMode": "$ENV{RDMS_DATA_PARTITION_MODE}", 
+        "ConnectivityMode": "$ENV{RDMS_DATA_CONNECTIVITY_MODE}", 
+        "StandaloneConnectionStrings":
+        {
+            "single": "$ENV{POSTGRESQL_CONN_STRING}"
+        }
+    },
+    "Client":
+    {
+        "TransactionRetries": "$ENV{TRANSACTION_RETRIES}"
+    },
+    "OSDU":
+    {
+        "AuthorizationMode": "$ENV{AUTHORIZATION_MODE}",
+        "CloudProvider": "$ENV{CLOUD_PROVIDER}", 
+        "DomainName": "$ENV{DOMAIN_NAME}", 
+        "KeyVaultUrl": "$ENV{KEYVAULT_URL}",
+        "PartitionUrl": "$ENV{PARTITION_URL}", 
+        "EntitlementsUrl": "$ENV{ENTITLEMENTS_URL}", 
+        "StorageUrl": "$ENV{STORAGE_URL}",
+        
+        "DataPartitionID": "$ENV{DATA_PARTITION_ID}",
+        "SchemaID": "$ENV{SCHEMA_ID}",
+        "LegalTags": "$ENV{LEGAL_TAGS}",
+        "LegalCountries": "$ENV{LEGAL_COUNTRIES}",
+        "RecordsPath": "$ENV{RECORDS_PATH}",
+        "EvaluatePolicyPath": "$ENV{EVALUATE_POLICY_PATH}",
+        "AuthorizationBulkSize": "$ENV{AUTHORIZATION_BULK_SIZE}"
+    },
+    "CloudProviders":
+    {
+        "Azure": {
+            "AzureEnableMsi": "$ENV{AZURE_ENABLE_MSI}",
+            "AzureEnablePostgresMsi": "$ENV{AZURE_ENABLE_POSTGRES_MSI}",
+            "AzurePrincipalSecret": "$ENV{AZURE_PRINCIPAL_SECRET}", 
+            "AzurePrincipalID": "$ENV{AZURE_PRINCIPAL_ID}", 
+            "AzureAdTenantID": "$ENV{AZURE_AD_TENANT_ID}", 
+            "AzureAdAppResourceID": "$ENV{AZURE_AD_APP_RESOURCE_ID}",
+            "AzureUseEnvironmentCredentials": "$ENV{AZURE_USE_ENVIRONMENT_CREDENTIALS}",
+            "AzureOSDUAccessTokenScopeOverride": "$ENV{AZURE_OSDU_ACCESS_TOKEN_SCOPE_OVERRIDE}",
+            "AzureKeyVaultAccessTokenScope": "$ENV{AZURE_KEYVAULT_ACCESS_TOKEN_SCOPE}",
+            "AzurePostgresAccessTokenScope": "$ENV{AZURE_POSTGRES_ACCESS_TOKEN_SCOPE}"
+        },
+        "GC": {
+            
+        },
+        "AWS": {
+            
+        },
+        "CIMPL": {
+            
+        }          
+    },
+    "Logging":
+    {
+        "LogLevel": "$ENV{LOG_MIN_SEVERITY}", 
+        "LogMaxSeverity": "$ENV{LOG_MAX_SEVERITY}",
+        "LogMinSeverity": "$ENV{LOG_MIN_SEVERITY}",
+        "LogFormat": "$ENV{LOG_FORMAT}",
+        "AuditLogsEnabled": "$ENV{AUDIT_LOGS_ENABLED}"
+    },
+    "Telemetry":
+    {
+        "OtelEnabled": "$ENV{OTEL_ENABLED}",
+        "OtelServiceName": "$ENV{OTEL_SERVICE_NAME}",
+        "OtelExporterOtlpEndpoint": "$ENV{OTEL_EXPORTER_OTLP_ENDPOINT}",
+        "OtelContextServerEnabled": "$ENV{OTEL_CONTEXT_SERVER_ENABLED}",
+        "OtelContextServerPort": "$ENV{OTEL_CONTEXT_SERVER_PORT}"
+    },
+    "Testing":
+    {
+        "OesProjectBuildDir": "$ENV{OES_PROJECT_BUILD_DIR}", 
+        "OesExecutePerfTest": "$ENV{OES_EXECUTE_PERF_TEST}", 
+        "OesExecuteManualTest": "$ENV{OES_EXECUTE_MANUAL_TEST}", 
+        "UnitTestsDataPath": "$ENV{UNIT_TESTS_DATA_PATH}", 
+        "OesPostgresqlUtconfig": "$ENV{OES_POSTGRESQL_UTCONFIG}" 
+    },
+    "PlainTests":
+    {
+        "JsonConfigTestVar": "$ENV{JSON_CONFIG_TEST_VAR}",
+        "OesJsonAdhocHandlerTestDataDir": "$ENV{OES_JSON_ADHOC_HANDLER_TEST_DATA_DIR}"
+    }
+}

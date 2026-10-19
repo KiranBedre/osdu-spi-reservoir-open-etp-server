@@ -1,0 +1,381 @@
+Info: ["etp12.energistics.org"]
+Warning: Server advertises 1 version:
+Warning: - etp12.energistics.org
+Warning: 
+=== etp12.energistics.org ===
+Info: {
+  "applicationName": "ReservoirDDMS - OSDU Reservoir DDMS ETP-1.2 Server",
+  "applicationVersion": "OSDU M27",
+  "contactInformation": {
+    "organizationName": "OSDU-Energistics",
+    "contactName": "laurent.deny@aspentech.com",
+    "contactPhone": "",
+    "contactEmail": "laurent.deny@aspentech.com"
+  },
+  "supportedCompression": [
+    "gzip"
+  ],
+  "supportedEncodings": [
+    "binary"
+  ],
+  "supportedFormats": [
+    "xml"
+  ],
+  "supportedDataObjects": [
+    {
+      "qualifiedType": "eml20.*",
+      "dataObjectCapabilities": {
+        "SupportsDelete": {
+          "item": {
+            "boolean": true
+          }
+        },
+        "SupportsGet": {
+          "item": {
+            "boolean": true
+          }
+        },
+        "SupportsPut": {
+          "item": {
+            "boolean": true
+          }
+        }
+      }
+    },
+    {
+      "qualifiedType": "resqml20.*",
+      "dataObjectCapabilities": {
+        "SupportsDelete": {
+          "item": {
+            "boolean": true
+          }
+        },
+        "SupportsGet": {
+          "item": {
+            "boolean": true
+          }
+        },
+        "SupportsPut": {
+          "item": {
+            "boolean": true
+          }
+        }
+      }
+    },
+    {
+      "qualifiedType": "resqml22.*",
+      "dataObjectCapabilities": {
+        "SupportsDelete": {
+          "item": {
+            "boolean": true
+          }
+        },
+        "SupportsGet": {
+          "item": {
+            "boolean": true
+          }
+        },
+        "SupportsPut": {
+          "item": {
+            "boolean": true
+          }
+        }
+      }
+    },
+    {
+      "qualifiedType": "eml23.*",
+      "dataObjectCapabilities": {
+        "SupportsDelete": {
+          "item": {
+            "boolean": true
+          }
+        },
+        "SupportsGet": {
+          "item": {
+            "boolean": true
+          }
+        },
+        "SupportsPut": {
+          "item": {
+            "boolean": true
+          }
+        }
+      }
+    },
+    {
+      "qualifiedType": "witsml21.*",
+      "dataObjectCapabilities": {
+        "SupportsDelete": {
+          "item": {
+            "boolean": true
+          }
+        },
+        "SupportsGet": {
+          "item": {
+            "boolean": true
+          }
+        },
+        "SupportsPut": {
+          "item": {
+            "boolean": true
+          }
+        }
+      }
+    },
+    {
+      "qualifiedType": "prodml22.*",
+      "dataObjectCapabilities": {
+        "SupportsDelete": {
+          "item": {
+            "boolean": true
+          }
+        },
+        "SupportsGet": {
+          "item": {
+            "boolean": true
+          }
+        },
+        "SupportsPut": {
+          "item": {
+            "boolean": true
+          }
+        }
+      }
+    },
+        {
+      "qualifiedType": "prodml23.*",
+      "dataObjectCapabilities": {
+        "SupportsDelete": {
+          "item": {
+            "boolean": true
+          }
+        },
+        "SupportsGet": {
+          "item": {
+            "boolean": true
+          }
+        },
+        "SupportsPut": {
+          "item": {
+            "boolean": true
+          }
+        }
+      }
+    }
+  ],
+  "supportedProtocols": [
+    {
+      "protocol": 0,
+      "protocolVersion": {
+        "major": 1,
+        "minor": 2,
+        "revision": 0,
+        "patch": 0
+      },
+      "role": "server",
+      "protocolCapabilities": {
+        
+      }
+    },
+    {
+      "protocol": 3,
+      "protocolVersion": {
+        "major": 1,
+        "minor": 2,
+        "revision": 0,
+        "patch": 0
+      },
+      "role": "store",
+      "protocolCapabilities": {
+        
+      }
+    },
+    {
+      "protocol": 4,
+      "protocolVersion": {
+        "major": 1,
+        "minor": 2,
+        "revision": 0,
+        "patch": 0
+      },
+      "role": "store",
+      "protocolCapabilities": {
+        
+      }
+    },
+    {
+      "protocol": 9,
+      "protocolVersion": {
+        "major": 1,
+        "minor": 2,
+        "revision": 0,
+        "patch": 0
+      },
+      "role": "store",
+      "protocolCapabilities": {
+        
+      }
+    },
+    {
+      "protocol": 18,
+      "protocolVersion": {
+        "major": 1,
+        "minor": 2,
+        "revision": 0,
+        "patch": 0
+      },
+      "role": "store",
+      "protocolCapabilities": {
+        
+      }
+    },
+    {
+      "protocol": 24,
+      "protocolVersion": {
+        "major": 1,
+        "minor": 2,
+        "revision": 0,
+        "patch": 0
+      },
+      "role": "store",
+      "protocolCapabilities": {
+        
+      }
+    },
+    {
+      "protocol": 25,
+      "protocolVersion": {
+        "major": 1,
+        "minor": 2,
+        "revision": 0,
+        "patch": 0
+      },
+      "role": "store",
+      "protocolCapabilities": {
+        
+      }
+    },
+    {
+      "protocol": 2400,
+      "protocolVersion": {
+        "major": 1,
+        "minor": 2,
+        "revision": 1,
+        "patch": 0
+      },
+      "role": "store",
+      "protocolCapabilities": {
+        "ResumeSession": {
+          "item": {
+            "int": 1
+          }
+        }
+      }
+    },
+    {
+      "protocol": 2404,
+      "protocolVersion": {
+        "major": 1,
+        "minor": 2,
+        "revision": 1,
+        "patch": 0
+      },
+      "role": "store",
+      "protocolCapabilities": {
+        "CopyDataObjectsByValue": {
+          "item": {
+            "int": 1
+          }
+        }
+      }
+    },
+    {
+      "protocol": 2424,
+      "protocolVersion": {
+        "major": 1,
+        "minor": 2,
+        "revision": 1,
+        "patch": 0
+      },
+      "role": "store",
+      "protocolCapabilities": {
+        "CopyDataspaceFromRemote": {
+          "item": {
+            "int": 9
+          }
+        },
+        "CopyDataspacesContent": {
+          "item": {
+            "int": 3
+          }
+        },
+        "CopyToDataspace": {
+          "item": {
+            "int": 7
+          }
+        },
+        "GetDataspaceInfo": {
+          "item": {
+            "int": 1
+          }
+        },
+        "LockDataspaces": {
+          "item": {
+            "int": 5
+          }
+        }
+      }
+    }
+  ],
+  "endpointCapabilities": {
+    "DataConnectivityMode": {
+      "item": {
+        "string": "osdu"
+      }
+    },
+    "DataPartitionMode": {
+      "item": {
+        "string": "single"
+      }
+    },
+    "MaxMessagePayloadUncompressedSize": {
+      "item": {
+        "long": 20000000000
+      }
+    },
+    "MaxWebSocketMessagePayloadSize": {
+      "item": {
+        "long": 2000000000
+      }
+    }
+  }
+}
+Warning: ReservoirDDMS - OSDU Reservoir DDMS ETP-1.2 Server (OSDU M27)
+OSDU-Energistics
+
+Warning: 10 protocols:
+Warning: - Core(0)
+Warning: - Discovery(3)
+Warning: - Store(4)
+Warning: - DataArray(9)
+Warning: - Transaction(18)
+Warning: - Dataspace(24)
+Warning: - SupportedTypes(25)
+Warning: - CoreOSDU(2400)
+Warning: - StoreOSDU(2404)
+Warning: - DataspaceOSDU(2424)
+Warning: 
+Warning: 1 supported encodings: binary
+Warning: 1 supported compression: gzip
+Warning: 1 supported formats: xml
+Warning: 
+7 supported objects: 
+Warning: - eml20.* (no caps)
+Warning: - resqml20.* (no caps)
+Warning: - resqml22.* (no caps)
+Warning: - eml23.* (no caps)
+Warning: - witsml21.* (no caps)
+Warning: - prodml22.* (no caps)
+Warning: - prodml23.* (no caps)
+Warning: 
+Maximum WebSocket Message Payload Size: 2,000,000,000 bytes

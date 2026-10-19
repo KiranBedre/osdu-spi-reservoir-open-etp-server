@@ -1,0 +1,17 @@
+set(oes_client_SOURCES
+    Client.cpp
+    ExportEpc.cpp
+    ImportEpc.cpp
+    ImportExportUtils.cpp
+)
+set(oes_client_HEADERS
+    Client.h
+    Client.hpp
+    ClientUtils.h
+    export.h
+    ExportEpc.h
+    fwd.h
+    Hdf5.h
+    ImportEpc.h
+    ImportExportUtils.h
+)
