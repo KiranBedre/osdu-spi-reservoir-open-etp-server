@@ -6,6 +6,7 @@ service:
   image:
     context: .
     dockerfile: devops/azure/Dockerfile
+    platforms: linux/amd64
 tests:
   acceptance:
     type: script
