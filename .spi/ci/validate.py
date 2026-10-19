@@ -233,6 +233,28 @@ def main() -> int:
         and not (ROOT / "data/Volve_Demo_Reservoir_Grid_Depth.h5").exists(),
         "oversized HDF5 fixtures remain in the published snapshot",
     )
+    upstream_filter = (ROOT / ".github/upstream-filter.yml").read_text(encoding="utf-8")
+    require(
+        re.search(r"^service: open-etp$", upstream_filter, re.MULTILINE) is not None,
+        "upstream filter service slug changed",
+    )
+    require(
+        re.search(r"^  data: strip$", upstream_filter, re.MULTILINE) is not None,
+        "upstream data must remain fork-owned",
+    )
+    require(
+        re.search(r"^  Third: strip$", upstream_filter, re.MULTILINE) is not None,
+        "generated third-party FOSSA target must remain filtered",
+    )
+    require(
+        re.search(
+            r"^expected_absent:\n(?:^  - .+\n)*^  - data\n(?:^  - .+\n)*^  - devops$",
+            upstream_filter,
+            re.MULTILINE,
+        )
+        is not None,
+        "filtered snapshots must assert data and devops are absent",
+    )
 
     build_paths = [
         ROOT / "devops/azure/Dockerfile",

@@ -1,5 +1,58 @@
-# Open ETP uses SYNC_MODE=passthrough because its C++ Azure and shared sources
-# coexist in the community tree. Fork-owned deletions keep OEP CI templates out
-# of main; this file fails closed if the repository is switched to filter mode.
-service: open-etp-server
-top_level: {}
+service: open-etp
+
+top_level:
+  .dockerignore: keep
+  .fossa.yml: keep
+  .gitattributes: keep
+  .gitignore: keep
+  .gitlab-ci.yml: strip
+  .trufflehog-exclude: strip
+  CMakeLists.txt: keep
+  CMakeSettings.json: keep
+  CREDITS: keep
+  Dockerfile.build: keep
+  Dockerfile.bundle: keep
+  Dockerfile.runtime: keep
+  Dockerfile.runtime.debug: keep
+  LICENSE: keep
+  NOTICE: keep
+  README.md: keep
+  azure-pipelines.yml: strip
+  cmake: keep
+  config: keep
+  create_demo_space.sh: keep
+  data: strip
+  docker-compose.yml: keep
+  docs: keep
+  list_unused_files.py: keep
+  otel-collector-config.yaml: keep
+  prometheus.yml: keep
+  run.sh: keep
+  src: keep
+  tests: keep
+  triplets: keep
+  vcpkg.json: keep
+
+testing:
+
+profiles:
+
+fossa_modules:
+  Source: keep
+  Third: strip
+
+expected_kept:
+  - CMakeLists.txt
+  - src
+  - tests
+
+expected_absent:
+  - data
+  - devops
+  - .gitlab-ci.yml
+  - .trufflehog-exclude
+  - azure-pipelines.yml
+
+inject_root_pom_azure_profile: ""
+
+inject_testing_pom_azure_module: ""
