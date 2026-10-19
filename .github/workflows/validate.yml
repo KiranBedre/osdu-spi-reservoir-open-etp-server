@@ -402,7 +402,7 @@ jobs:
           # core is activeByDefault, so a bare profile flag would drop it (ADR-035). Filter-mode
           # fork_upstream builds core only: its azure profile points at fork-owned directories that
           # exist only after the cascade merge. Verbatim modes carry the complete upstream tree.
-          maven_profile: ${{ ((github.base_ref == 'fork_upstream' || github.ref_name == 'fork_upstream') && (vars.SYNC_MODE == '' || vars.SYNC_MODE == 'filter')) && 'core' || vars.MAVEN_PROFILE || 'core,azure' }}
+          maven_profile: ${{ ((github.base_ref == 'fork_upstream' || github.ref_name == 'fork_upstream') && (vars.SYNC_MODE == '' || vars.SYNC_MODE == 'filter' || vars.SYNC_MODE == 'filtered-snapshot')) && 'core' || vars.MAVEN_PROFILE || 'core,azure' }}
 
   node-build:
     name: "Node Build"

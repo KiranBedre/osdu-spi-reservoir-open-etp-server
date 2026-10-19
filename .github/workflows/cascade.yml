@@ -302,7 +302,7 @@ jobs:
               echo "exists=false" >> $GITHUB_OUTPUT
               echo "${SYNC_MODE} mode - skipping fork-owned path assertion and pom stamp"
               ;;
-            filter)
+            filter|filtered-snapshot)
               if [ -f ".github/upstream-filter.yml" ]; then
                 echo "exists=true" >> $GITHUB_OUTPUT
               else
