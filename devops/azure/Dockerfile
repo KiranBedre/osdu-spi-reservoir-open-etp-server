@@ -77,16 +77,21 @@ COPY ./config/ /source/config/
 COPY ./src/ /source/src/
 
 # Build Open-ETP-server
-RUN cmake -GNinja -B build \
+RUN mkdir -p /spi-test && \
+    cmake -GNinja -B build \
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_TOOLCHAIN_FILE=${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake \
         -DCMAKE_INSTALL_PREFIX="./dist" \
         -DCODE_COVERAGE=OFF && \
     ninja -C build -j8 install && \
-    ctest --test-dir build --label-regex UNIT --output-on-failure
+    ctest --test-dir build --label-regex UNIT --output-on-failure \
+        --output-junit /spi-test/ctest.xml
 
 WORKDIR /source/dist
 RUN tar -czvf /source/dist.tgz .
+
+FROM scratch AS spi-test
+COPY --from=build-env /spi-test/ctest.xml /ctest.xml
 
 FROM build-env AS acceptance-fixtures
 
