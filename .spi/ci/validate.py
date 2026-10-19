@@ -120,7 +120,10 @@ def main() -> int:
     service = report["service_config"]
     contract = report["contract"]
     require(service["name"] == "open-etp", "descriptor service name changed")
-    require(service["archetype"] == "cpp-cmake-azure", "C++ archetype did not resolve")
+    require(
+        service["archetype"] == "native-container-azure",
+        "native container archetype did not resolve",
+    )
     require(
         service["image"]["dockerfile"] == "devops/azure/Dockerfile",
         "service image Dockerfile did not resolve",
@@ -159,7 +162,15 @@ def main() -> int:
     dockerfile = (ROOT / "devops/azure/Dockerfile").read_text(encoding="utf-8")
     stages = re.findall(r"^FROM\s+\S+\s+AS\s+(\S+)", dockerfile, re.MULTILINE)
     require(
-        stages == ["build-env", "acceptance-fixtures", "runtime-base", "acceptance", "runtime"],
+        stages
+        == [
+            "build-env",
+            "spi-test",
+            "acceptance-fixtures",
+            "runtime-base",
+            "acceptance",
+            "runtime",
+        ],
         "Docker stages changed",
     )
     require("USER 1000:1000" in dockerfile, "runtime must use Kubernetes UID 1000")
@@ -188,6 +199,12 @@ def main() -> int:
     require(
         "/suite/data/IntegrationTestsData/" in dockerfile,
         "acceptance fixtures must remain relative to the SPI suite root",
+    )
+    require(
+        "--output-junit /spi-test/ctest.xml" in dockerfile
+        and "FROM scratch AS spi-test" in dockerfile
+        and "COPY --from=build-env /spi-test/ctest.xml /ctest.xml" in dockerfile,
+        "native test stage must export CTest JUnit evidence",
     )
 
     fixture_fetcher = ROOT / "devops/scripts/fetch-test-fixtures.sh"
@@ -247,7 +264,10 @@ def main() -> int:
         )
     )
     archetypes = schema["properties"]["service"]["properties"]["archetype"]["enum"]
-    require("cpp-cmake-azure" in archetypes, "published schema omits C++ archetype")
+    require(
+        "native-container-azure" in archetypes,
+        "published schema omits native container archetype",
+    )
 
     provenance = json.loads((ROOT / "commits.json").read_text(encoding="utf-8"))
     require(

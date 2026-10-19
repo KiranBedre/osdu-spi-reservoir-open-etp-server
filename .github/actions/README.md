@@ -75,4 +75,4 @@ Located directly in `.github/workflows/` with `.yml` extension:
 2. **Single Responsibility**: Each component should do one thing well
 3. **Reusability**: Design for reuse across workflows
 4. **Versioning**: Consider future compatibility when making changes
-5. **Testing**: Test components thoroughly before reuse
+5. **Testing**: Test components thoroughly before reuse 

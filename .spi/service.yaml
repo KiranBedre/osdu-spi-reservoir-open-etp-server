@@ -1,7 +1,7 @@
 schemaVersion: 4
 service:
   name: open-etp
-  archetype: cpp-cmake-azure
+  archetype: native-container-azure
   sourcePath: .
   image:
     context: .

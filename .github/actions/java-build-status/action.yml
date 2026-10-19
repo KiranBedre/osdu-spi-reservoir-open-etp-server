@@ -50,4 +50,4 @@ runs:
           BUILD_RESULT="$DIRECT_RESULT"
         fi
         echo "is_java=$IS_JAVA" >> "$GITHUB_OUTPUT"
-        echo "build_result=$BUILD_RESULT" >> "$GITHUB_OUTPUT"
+        echo "build_result=$BUILD_RESULT" >> "$GITHUB_OUTPUT" 
