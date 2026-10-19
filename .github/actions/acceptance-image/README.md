@@ -51,8 +51,10 @@ All suites in one image use the same runtime type. Maven suites use
 `nodeVersion`. Python/FastAPI script suites use
 `build/script-acceptance-python.Dockerfile`, which installs the root runtime
 and test requirement files and carries the application source needed by
-pytest. Resolution halts for an unsupported runtime rather than silently
-running tests on the wrong one.
+pytest. Native container suites use the repository's
+`devops/azure/Dockerfile` `acceptance` target so their compiled test runner and
+external fixture stages remain part of the paired image. Resolution halts for
+an unsupported runtime rather than silently running tests on the wrong one.
 
 Each script image invokes the declared repository-relative entrypoint
 directly. Script arguments remain argv tokens; the entrypoint expands only
