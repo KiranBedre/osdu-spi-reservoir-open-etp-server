@@ -7,6 +7,7 @@ on:
 
 jobs:
   sync:
+    if: vars.SYNC_MODE != 'standalone'
     runs-on: ubuntu-latest
     env:
       GH_REPO: ${{ github.repository }}
