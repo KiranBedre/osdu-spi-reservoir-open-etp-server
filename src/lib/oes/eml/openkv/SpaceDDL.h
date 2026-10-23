@@ -59,6 +59,22 @@ void add_relations_view(const Connection_ptr& conn, const std::string &schema);
 OES_EML_EXPORT
 void update_resources_view(const Connection_ptr& conn, const std::string &schema);
 
+//! Takes a new, empty space down to an older version, for a copy from an older source.
+//! The copy protocol starts at 15, so the steps go no further down.
+//! Throws if the space holds resources or a version is out of range.
+OES_EML_EXPORT
+void downgrade_empty_space(const Connection_ptr& conn, const std::string& dbfile, int from_version, int to_version);
+
+//! Columns of \p table added after \p to_version, which a copy to a target at that version leaves out
+OES_EML_EXPORT
+std::vector<std::string> columns_added_after(const std::string& table, int to_version);
+
+//! Throws if the rows of a space at \p from_version cannot be represented at \p to_version.
+//! Keep in sync with the upgrade steps (OpenKVRepo::upgradeSpaceSchemaVersion), downgrade_empty_space
+//! and columns_added_after: each new schema version needs its down-step, projection and pre-check.
+OES_EML_EXPORT
+void check_space_projection(const Connection_ptr& conn, const std::string& dbfile, int from_version, int to_version);
+
 //============================================================================
 
 OES_EML_EXPORT

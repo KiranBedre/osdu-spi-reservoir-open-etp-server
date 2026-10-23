@@ -1,4 +1,5 @@
 #include "PGStream.h"
+#include "SpaceDDL.h"
 
 #include <oes/core/utils/config_enter_3rdparty.h>
 #include <libpq-fe.h>
@@ -7,26 +8,42 @@
 
 #include <oes/core/utils/Logger.h>
 #include <oes/postgresql/Connection.h>
+#include <oes/postgresql/PhysicalName.h>
 #include <oes/common/etp12/Messages.h>
 
 #include <array>
 #include <cassert>
+#include <cstring>
 #include <iterator>
+#include <map>
+#include <set>
 
 
 namespace oes::eml::openkv {
 
 namespace {
 
-// Migrations append columns, so both sides name them, in the same (sorted) order
-std::string column_list(PGconn* conn, const std::string& schema, const std::string& table) {
+// Migrations append columns, so both sides name them, in the same (sorted) order;
+// sources before the version exchange copy whole tables, i.e. in physical order
+std::string column_list(
+    PGconn* conn, const std::string& schema, const std::string& table, bool physical_order = false,
+    const std::vector<std::string>& excluded = {}
+) {
     const std::string qualified = schema + "." + table;
-    const char* params[1] = { qualified.c_str() };
+    std::string excluded_array = "{";
+    for (const auto& column : excluded) {
+        excluded_array += (excluded_array.size() > 1 ? "," : "") + column;
+    }
+    excluded_array += "}";
+    const char* params[2] = { qualified.c_str(), excluded_array.c_str() };
+    const std::string query = fmt::format(
+        "SELECT string_agg(quote_ident(attname), ', ' ORDER BY {}) FROM pg_attribute"
+        " WHERE attrelid = $1::regclass AND attnum > 0 AND NOT attisdropped AND attname <> ALL($2::text[])",
+        physical_order ? "attnum" : "attname"
+    );
     PGresult* res = PQexecParams(
-        conn,
-        "SELECT string_agg(quote_ident(attname), ', ' ORDER BY attname) FROM pg_attribute"
-        " WHERE attrelid = $1::regclass AND attnum > 0 AND NOT attisdropped",
-        1, nullptr, params, nullptr, nullptr, 0
+        conn, query.c_str(),
+        2, nullptr, params, nullptr, nullptr, 0
     );
     std::string columns;
     if (PQresultStatus(res) == PGRES_TUPLES_OK && PQntuples(res) == 1 && !PQgetisnull(res, 0, 0)) {
@@ -38,7 +55,56 @@ std::string column_list(PGconn* conn, const std::string& schema, const std::stri
     return columns;
 }
 
+// Tables a stream may carry, besides the "schema" and "admin" pseudo-tables
+bool is_streamed_table(const std::string& table) {
+    static const std::set<std::string> tables = {
+        "uri", "xpa", "typ", "del_res", "res", "obj", "rel", "ary", "bin"
+    };
+    return tables.count(table) > 0;
+}
+
+// Field count of the first tuple of a binary COPY: -1 for an empty table, -2 if not a binary COPY
+int copy_field_count(const std::vector<uint8_t>& data) {
+    static const char signature[] = "PGCOPY\n\377\r\n"; // 11 bytes with its NUL
+    if (data.size() < 19 || std::memcmp(data.data(), signature, 11) != 0) {
+        return -2;
+    }
+    const size_t extension = (size_t(data[15]) << 24) | (size_t(data[16]) << 16) | (size_t(data[17]) << 8) | size_t(data[18]);
+    const size_t pos = 19 + extension;
+    if (data.size() < pos + 2) {
+        return -2;
+    }
+    return int16_t((data[pos] << 8) | data[pos + 1]);
+}
+
+std::string version_number(const std::string& schema_version) {
+    return schema_version.substr(schema_version.find(':') + 1);
+}
+
 } // namespace
+
+std::string spaceSchemaVersion(const Connection_ptr& conn, const std::string& dbfile) {
+    const oes::postgresql::relational::PhysicalName phys(dbfile, oes::postgresql::relational::IMPLICIT_LOWERCASE);
+    return conn->executeString(
+        fmt::format("SELECT obj_description('{}'::regnamespace, 'pg_namespace')", phys.sqlText())
+    );
+}
+
+int schemaVersionNumber(const std::string& schema_version) {
+    int magic_cookie = 0;
+    space_schema_versions(magic_cookie);
+    const std::string prefix = std::to_string(magic_cookie) + ':';
+    if (schema_version.compare(0, prefix.size(), prefix) != 0) {
+        return -1;
+    }
+    try {
+        size_t used = 0;
+        const int version = std::stoi(schema_version.substr(prefix.size()), &used);
+        return prefix.size() + used == schema_version.size() ? version : -1;
+    } catch (const std::exception&) {
+        return -1;
+    }
+}
 
 // Helper enum class SpaceTableStreamStatus functions
 bool hasTableStreamStatus(const uint8_t raw_flags, const SpaceTableStreamStatus flag) {
@@ -71,7 +137,7 @@ public:
     const Space& m_space;
     const std::string& m_schema;
 
-    Impl_(const Space& space, Connection_ptr& conn, const bool has_ref, const size_t max_msg_size);
+    Impl_(const Space& space, Connection_ptr& conn, const bool has_ref, const size_t max_msg_size, std::string schema_version, int project_to);
     ~Impl_();
 
     SpaceStreamStatus stream(TableData& td);
@@ -83,6 +149,9 @@ private:
     bool clean();
 
     std::string prepare_cmd(const std::string& table);
+    std::vector<std::string> excluded_columns(const std::string& table) const {
+        return project_to_ > 0 ? columns_added_after(table, project_to_) : std::vector<std::string>();
+    }
     std::string get_admin_space_xdata();
     bool start_table_dump();
     bool end_table_dump();
@@ -101,6 +170,9 @@ private:
     
     size_t max_msg_size_ = 0;
     const bool has_ref;
+    std::string schema_data_; // the "schema" pseudo-table, until sent
+    bool physical_order_ = false;
+    const int project_to_;
 
     SpaceTableStreamStatus status_ = SpaceTableStreamStatus::eStart;
     
@@ -116,14 +188,15 @@ const PGStreamer::Impl_::tables_name_array_t PGStreamer::Impl_::tables_ = {
     "bin"
 };
 
-PGStreamer::Impl_::Impl_(const Space& space, Connection_ptr& conn, const bool has_ref, const size_t max_msg_size)
+PGStreamer::Impl_::Impl_(const Space& space, Connection_ptr& conn, const bool has_ref, const size_t max_msg_size, std::string schema_version, int project_to)
     : m_space(space),
       m_schema(m_space.dbfile_),
       pg_conn_(conn->pq_connection()),
       current_table_it_(PGStreamer::Impl_::tables_.cbegin()),
       tx_(conn->begin_transaction()),
       max_msg_size_(static_cast<size_t>(max_msg_size*0.9)),
-      has_ref(has_ref) {
+      has_ref(has_ref),
+      project_to_(project_to) {
     if (has_ref) {
         if (!define_functions()) {
             throw std::runtime_error("Can not prepare functions");
@@ -134,6 +207,22 @@ PGStreamer::Impl_::Impl_(const Space& space, Connection_ptr& conn, const bool ha
         }
     }
 
+    if (!schema_version.empty()) {
+        schema_data_ = schema_version + '\n';
+        for (const auto& table : tables_) {
+            if (table == "admin") {
+                continue;
+            }
+            const std::string columns = column_list(pg_conn_, m_schema, table, false, excluded_columns(table));
+            if (columns.empty()) {
+                throw std::runtime_error("cannot list the columns of table " + table);
+            }
+            schema_data_ += table + ':' + columns + '\n';
+        }
+    } else {
+        physical_order_ = true;
+        ++current_table_it_; // skips "admin": targets before the exchange overwrite their xdata with it instead of merging
+    }
 }
 
 PGStreamer::Impl_::~Impl_() {
@@ -500,7 +589,7 @@ bool PGStreamer::Impl_::clean() {
 }
 
 std::string PGStreamer::Impl_::prepare_cmd(const std::string& table) {
-    const std::string columns = column_list(pg_conn_, m_schema, table);
+    const std::string columns = column_list(pg_conn_, m_schema, table, physical_order_, excluded_columns(table));
     if (columns.empty()) {
         throw std::runtime_error("cannot list the columns of table " + table);
     }
@@ -577,6 +666,14 @@ bool PGStreamer::Impl_::end_table_dump() {
 }
 
 SpaceStreamStatus PGStreamer::Impl_::stream(TableData& td) {
+
+    if (!schema_data_.empty()) {
+        td.m_tableName = "schema";
+        td.m_tableData.assign(schema_data_.begin(), schema_data_.end());
+        td.m_tableStatus = static_cast<uint8_t>(SpaceTableStreamStatus::eDone);
+        schema_data_.clear();
+        return SpaceStreamStatus::eOngoing;
+    }
 
     // Must be always start OR ongoing
     assert(status_ != SpaceTableStreamStatus::eFailed);
@@ -676,9 +773,9 @@ SpaceStreamStatus PGStreamer::Impl_::stream(TableData& td) {
 // ========================================================================================================
 
 // PGStreamer definition
-PGStreamer::PGStreamer(const Space& space, Connection_ptr conn, const bool has_ref, const size_t max_msg_size)
+PGStreamer::PGStreamer(const Space& space, Connection_ptr conn, const bool has_ref, const size_t max_msg_size, std::string schema_version, int project_to)
     : PGStream(space, std::move(conn)),
-      impl_{std::make_unique<Impl_>(space, m_conn_, has_ref, max_msg_size)} {}
+      impl_{std::make_unique<Impl_>(space, m_conn_, has_ref, max_msg_size, std::move(schema_version), project_to)} {}
 
 PGStreamer::~PGStreamer() {}
 
@@ -694,48 +791,141 @@ public:
     const Space& m_space;
     const std::string& schema;
 
-    Impl_(const Space& space, Connection_ptr& conn);
+    Impl_(const Space& space, Connection_ptr& conn, std::string schema_version);
 
     SpaceStreamStatus consume(TableData& td);
+    bool finish();
+    SpaceStreamStatus fail(std::string msg);
 
     std::string current_table;
+    std::string error_;
 private:
+    Connection_ptr conn_;
     PGconn* const pg_conn_;
 
     std::vector<uint8_t> buffer_;
 
+    const std::string schema_version_;
+    bool schema_received_ = false;
+    bool legacy_ = false; // the source sent no "schema" pseudo-table
+    std::map<std::string, std::string> columns_; // received in the "schema" pseudo-table
+    bool copy_active_ = false;
+    bool first_row_pending_ = false;
+    int expected_fields_ = 0;
+
+    SpaceStreamStatus take_source_version(const std::string& version);
+    SpaceStreamStatus read_schema(const TableData& td);
     bool clear_pg_conn();
 };
 
-PGConsumer::Impl_::Impl_(const Space& space, Connection_ptr& conn)
+PGConsumer::Impl_::Impl_(const Space& space, Connection_ptr& conn, std::string schema_version)
     : m_space(space),
       schema(space.dbfile_),
-      pg_conn_(conn->pq_connection()) {}
+      conn_(conn),
+      pg_conn_(conn->pq_connection()),
+      schema_version_(std::move(schema_version)) {}
+
+SpaceStreamStatus PGConsumer::Impl_::fail(std::string msg) {
+    OES_ERROR("Dataspace stream into {}: {}", m_space.uid_, msg);
+    if (copy_active_) {
+        PQputCopyEnd(pg_conn_, msg.c_str());
+        while (PGresult* res = PQgetResult(pg_conn_)) {
+            PQclear(res);
+        }
+        copy_active_ = false;
+    }
+    buffer_.clear();
+    error_ = std::move(msg);
+    return SpaceStreamStatus::eFailed;
+}
+
+SpaceStreamStatus PGConsumer::Impl_::take_source_version(const std::string& version) {
+    const int source = schemaVersionNumber(version);
+    const int target = schemaVersionNumber(schema_version_);
+    if (source < 0 || source > target) {
+        return fail(fmt::format(
+            "The source dataspace is at schema {}, the target at {}",
+            version_number(version), version_number(schema_version_)
+        ));
+    }
+    if (source < target) {
+        // An older source: its rows go into its own layout, then the target's upgrade steps run on them
+        try {
+            downgrade_empty_space(conn_, schema, target, source);
+        } catch (const std::exception& e) {
+            return fail(fmt::format("Cannot take the target from schema {} down to {}: {}", target, source, e.what()));
+        }
+    }
+    schema_received_ = true;
+    return SpaceStreamStatus::eOngoing;
+}
+
+SpaceStreamStatus PGConsumer::Impl_::read_schema(const TableData& td) {
+    std::istringstream lines(std::string(td.m_tableData.begin(), td.m_tableData.end()));
+    std::string version;
+    std::getline(lines, version);
+    if (take_source_version(version) == SpaceStreamStatus::eFailed) {
+        return SpaceStreamStatus::eFailed;
+    }
+    for (std::string line; std::getline(lines, line);) {
+        const auto colon = line.find(':');
+        if (colon != std::string::npos) {
+            columns_[line.substr(0, colon)] = line.substr(colon + 1);
+        }
+    }
+    return SpaceStreamStatus::eOngoing;
+}
 
 SpaceStreamStatus PGConsumer::Impl_::consume(TableData& td) {
     auto ret = SpaceStreamStatus::eOngoing;
     const auto res_table_raw_status = static_cast<uint8_t>(td.m_tableStatus);
 
-    if (hasTableStreamStatus(res_table_raw_status, SpaceTableStreamStatus::eStart)) {
-        current_table = td.m_tableName;
-        const std::string columns = column_list(pg_conn_, schema, current_table);
-        if (columns.empty()) {
+    if (td.m_tableName == "schema") {
+        return read_schema(td);
+    }
+    if (!schema_received_) {
+        // Every server without the version exchange is a 15 binary
+        legacy_ = true;
+        int magic_cookie = 0;
+        space_schema_versions(magic_cookie);
+        if (take_source_version(fmt::format("{}:15", magic_cookie)) == SpaceStreamStatus::eFailed) {
             return SpaceStreamStatus::eFailed;
         }
+    }
+
+    if (hasTableStreamStatus(res_table_raw_status, SpaceTableStreamStatus::eStart)) {
+        current_table = td.m_tableName;
+        const auto received = columns_.find(current_table);
+        if (!is_streamed_table(current_table) || (!legacy_ && received == columns_.end())) {
+            return fail("Unexpected table in the stream: " + current_table);
+        }
+        const std::string columns = column_list(pg_conn_, schema, current_table, legacy_);
+        if (columns.empty()) {
+            return fail("Cannot list the columns of table " + current_table);
+        }
+        if (!legacy_ && columns != received->second) {
+            return fail(fmt::format(
+                "Table {}: the source sends the columns ({}), the target has ({})",
+                current_table, received->second, columns
+            ));
+        }
+        expected_fields_ = 1;
+        for (size_t pos = columns.find(", "); pos != std::string::npos; pos = columns.find(", ", pos + 2)) {
+            ++expected_fields_;
+        }
+        first_row_pending_ = true;
+
         const std::string cmd = fmt::format(
             "COPY {}.{} ({}) FROM STDIN WITH (FORMAT BINARY)", schema, current_table, columns
         );
         
         PGresult* result = PQexec(pg_conn_, cmd.c_str());
-        if (PQresultStatus(result) != PGRES_COPY_IN) {
-            OES_ERROR("Copy in table {} failed: {}", current_table, PQerrorMessage(pg_conn_));
-            ret = SpaceStreamStatus::eFailed;
-        }
+        const bool copy_in = PQresultStatus(result) == PGRES_COPY_IN;
         PQclear(result);
-
-        if (ret == SpaceStreamStatus::eFailed) {
-            return ret;
+        if (!copy_in) {
+            return fail(fmt::format("Copy in table {} failed: {}", current_table, PQerrorMessage(pg_conn_)));
         }
+        copy_active_ = true;
     } 
 
     if (hasTableStreamStatus(res_table_raw_status, SpaceTableStreamStatus::eStart) ||
@@ -749,6 +939,21 @@ SpaceStreamStatus PGConsumer::Impl_::consume(TableData& td) {
         );
 
         if (hasTableStreamStatus(res_table_raw_status, SpaceTableStreamStatus::eFinalChunk)) {
+            if (first_row_pending_) {
+                first_row_pending_ = false;
+                const int fields = copy_field_count(buffer_);
+                if (fields == -2) {
+                    return fail(fmt::format("Table {}: not a binary COPY stream", td.m_tableName));
+                }
+                if (fields >= 0 && fields != expected_fields_) {
+                    return fail(fmt::format(
+                        "Table {}: the source sends {} fields per row, the target has {} columns{}",
+                        td.m_tableName, fields, expected_fields_,
+                        legacy_ ? " (a source sending no schema version is taken as schema 15)" : ""
+                    ));
+                }
+            }
+
             auto result = PQputCopyData(
                 pg_conn_,
                 reinterpret_cast<const char*>(buffer_.data()),
@@ -760,8 +965,7 @@ SpaceStreamStatus PGConsumer::Impl_::consume(TableData& td) {
             if (result == 1) {
                 return SpaceStreamStatus::eOngoing;
             } else {
-                OES_ERROR("Can not initialize copy table for table {}", td.m_tableName);
-                return SpaceStreamStatus::eFailed;
+                return fail(fmt::format("Copy into table {} failed: {}", td.m_tableName, PQerrorMessage(pg_conn_)));
             }
         }
 
@@ -781,7 +985,8 @@ SpaceStreamStatus PGConsumer::Impl_::consume(TableData& td) {
             );
 
             if (PQresultStatus(res) != PGRES_COMMAND_OK) {
-                OES_ERROR("Could not insert xdata to space {}", m_space.uid_);
+                error_ = fmt::format("Could not insert xdata to space {}: {}", m_space.uid_, PQerrorMessage(pg_conn_));
+                OES_ERROR("{}", error_);
                 ret = SpaceStreamStatus::eFailed;
             }
 
@@ -796,24 +1001,59 @@ SpaceStreamStatus PGConsumer::Impl_::consume(TableData& td) {
         }
 
         if (current_table.empty()) {
-            OES_ERROR("Can not finalize table copy since it is not active");
-            return SpaceStreamStatus::eFailed;
+            return fail("Can not finalize table copy since it is not active");
         }
 
+        const std::string table = std::move(current_table);
         current_table.clear();
+        copy_active_ = false;
         auto result = PQputCopyEnd(pg_conn_, nullptr);
-        if (result != 1) {
-            ret = SpaceStreamStatus::eFailed;
-            OES_ERROR("Can not end copy of table {}", current_table);
-        }
-
-        if (!clear_pg_conn()) {
-            OES_ERROR("Copy end: {}", PQerrorMessage(pg_conn_));
-            ret = SpaceStreamStatus::eFailed;
+        if (result != 1 || !clear_pg_conn()) {
+            return fail(fmt::format("Copy into table {} failed: {}", table, PQerrorMessage(pg_conn_)));
         }
     }
 
     return ret;
+}
+
+bool PGConsumer::Impl_::finish() {
+    const char* params[1] = { schema.c_str() };
+    PGresult* res = PQexecParams(
+        pg_conn_,
+        R"sql(
+SELECT format('SELECT setval(%L, COALESCE((SELECT max(%I) FROM %I.%I), 0) + 1, false)',
+              seq, a.attname, n.nspname, c.relname)
+  FROM pg_class AS c
+  JOIN pg_namespace AS n ON n.oid = c.relnamespace
+  JOIN pg_attribute AS a ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped
+ CROSS JOIN LATERAL pg_get_serial_sequence(format('%I.%I', n.nspname, c.relname), a.attname) AS seq
+ WHERE n.nspname = lower($1) AND c.relkind = 'r' AND seq IS NOT NULL
+)sql",
+        1, nullptr, params, nullptr, nullptr, 0
+    );
+    std::vector<std::string> setvals;
+    if (PQresultStatus(res) == PGRES_TUPLES_OK) {
+        for (int i = 0; i < PQntuples(res); ++i) {
+            setvals.emplace_back(PQgetvalue(res, i, 0));
+        }
+    } else {
+        error_ = fmt::format("Cannot list the sequences of {}: {}", schema, PQerrorMessage(pg_conn_));
+    }
+    PQclear(res);
+
+    for (const auto& setval : setvals) {
+        res = PQexec(pg_conn_, setval.c_str());
+        if (PQresultStatus(res) != PGRES_TUPLES_OK) {
+            error_ = fmt::format("Cannot reset a sequence of {}: {}", schema, PQerrorMessage(pg_conn_));
+        }
+        PQclear(res);
+    }
+
+    if (!error_.empty()) {
+        OES_ERROR("{}", error_);
+        return false;
+    }
+    return true;
 }
 
 bool PGConsumer::Impl_::clear_pg_conn() {
@@ -830,16 +1070,23 @@ bool PGConsumer::Impl_::clear_pg_conn() {
 // ========================================================================================================
 
 // PGConsumer definitions
-PGConsumer::PGConsumer(const Space& space, Connection_ptr conn)
+PGConsumer::PGConsumer(const Space& space, Connection_ptr conn, std::string schema_version)
     : PGStream(space, std::move(conn)),
-      impl_{std::make_unique<PGConsumer::Impl_>(space, m_conn_)} {}
+      impl_{std::make_unique<PGConsumer::Impl_>(space, m_conn_, std::move(schema_version))} {}
 
 PGConsumer::~PGConsumer() {}
 
+bool PGConsumer::finish() {
+    return impl_->finish();
+}
+
+const std::string& PGConsumer::error() const {
+    return impl_->error_;
+}
+
 SpaceStreamStatus PGConsumer::consume(TableData& td) {
     if (td.m_copyStatus == static_cast<uint8_t>(SpaceStreamStatus::eFailed)) {
-        OES_ERROR("Space copy failed from remote server");
-        return SpaceStreamStatus::eFailed;
+        return impl_->fail("The source server failed to stream the dataspace");
     }
 
     auto cp_status = static_cast<SpaceStreamStatus>(td.m_copyStatus);
