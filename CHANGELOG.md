@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.5](https://github.com/KiranBedre/osdu-spi-reservoir-open-etp-server/compare/v0.1.4...v0.1.5) (2026-10-23)
+
+
+### 🔧 Miscellaneous
+
+* Sync template updates ([#14](https://github.com/KiranBedre/osdu-spi-reservoir-open-etp-server/issues/14)) ([c354584](https://github.com/KiranBedre/osdu-spi-reservoir-open-etp-server/commit/c354584d90bf7de8de2363d9c55268314a953b73))
+* **template-sync:** Sync reconciled template ([30aa322](https://github.com/KiranBedre/osdu-spi-reservoir-open-etp-server/commit/30aa322859121117f4242fa594e400da6f572aa3))
+
 ## [0.1.4](https://github.com/KiranBedre/osdu-spi-reservoir-open-etp-server/compare/v0.1.3...v0.1.4) (2026-10-19)
 
 
