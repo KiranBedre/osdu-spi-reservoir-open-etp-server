@@ -1,4 +1,4 @@
-This is a forked repository of the OSDU project, optimized for GitHub Copilot use.
+This is a forked repository of the OSDU project, optimized for GitHub Copilot use. 
 The following guidelines are designed to enhance clarity and efficiency in development practices, ensuring a smooth workflow for contributors.
 
 ## Repository Structure
