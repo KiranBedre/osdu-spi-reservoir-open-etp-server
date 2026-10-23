@@ -130,12 +130,8 @@ jobs:
           UPSTREAM_URL: ${{ steps.upstream.outputs.upstream_url }}
         run: |
           set -euo pipefail
-          python3 .github/actions/acceptance-resolver/resolve.py \
-            --contract-only --descriptor .spi/service.yaml --report "$RUNNER_TEMP/service.json"
-          SERVICE_NAME=$(jq -r '.service_config.name' "$RUNNER_TEMP/service.json")
           gh variable set UPSTREAM_REPO_URL --body "$UPSTREAM_URL"
           gh variable set SYNC_MODE --body "mirror"
-          gh variable set SERVICE_NAME --body "$SERVICE_NAME"
 
       - name: Apply branch rulesets
         env:

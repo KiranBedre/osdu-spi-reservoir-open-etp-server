@@ -23,7 +23,7 @@ When performing dependency triage analysis, follow this structured workflow to e
 
 2. **Dependency Extraction**
    - Extract all `<dependency>` declarations from each POM
-   - Identify managed dependencies from parent POMs
+   - Identify managed dependencies from parent POMs  
    - Note version variables and properties
    - Map dependencies to their declaring modules
 
@@ -39,7 +39,7 @@ mvn dependency:list -DoutputFile=dependencies.txt
 mvn dependency:tree > dependency-tree.txt
 ```
 
-### Phase 2: Version Analysis
+### Phase 2: Version Analysis  
 **Objective:** Assess current state vs available updates
 
 **Tasks:**
@@ -131,7 +131,7 @@ mvn com.github.spotbugs:spotbugs-maven-plugin:spotbugs
 
 ### Dependencies Analysis Summary
 - **Up to Date:** [count] dependencies
-- **Minor Updates:** [count] dependencies
+- **Minor Updates:** [count] dependencies  
 - **Major Updates:** [count] dependencies
 - **Security Updates:** [count] dependencies
 
@@ -266,7 +266,7 @@ cat version-updates.txt # Analyze available updates
 
 **Risk Assessment Matrix:**
 - **CRITICAL:** Active exploits, RCE vulnerabilities, auth bypasses
-- **HIGH:** Data exposure, privilege escalation, major security flaws
+- **HIGH:** Data exposure, privilege escalation, major security flaws  
 - **MEDIUM:** Information disclosure, DoS vulnerabilities, outdated dependencies (>2 years)
 - **LOW:** Minor security issues, maintenance updates, performance improvements
 

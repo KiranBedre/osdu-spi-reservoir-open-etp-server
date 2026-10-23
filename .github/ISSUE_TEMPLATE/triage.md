@@ -8,7 +8,7 @@ assignees: []
 
 ## Task
 
-Analyze this service's dependencies and security posture using available tools, then produce a detailed report.
+Analyze this service's dependencies and security posture using available tools, then produce a detailed report. 
 
 ## Checklist
 
