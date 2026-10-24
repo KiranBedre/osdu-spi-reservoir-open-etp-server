@@ -16,9 +16,13 @@
 
 #include <chrono>
 #include <cmath>
+#include <functional>
+#include <set>
+#include <sstream>
 
 #include <oes/core/utils/config_enter_3rdparty.h>
 #include <fmt/format.h>
+#include <libpq-fe.h>
 #include <oes/core/utils/config_leave_3rdparty.h>
 
 #include <oes/testing/eml/ServerFixture.h>
@@ -208,22 +212,170 @@ EmlObjMock putTraj20(OpenKVServerFixture& fx, const data12::Object::Dataspace& s
     return traj;
 }
 
-// CopyDataspaceFromRemote without the network: dump on one connection, load on another
-bool streamSpace(OpenKVServerFixture& fx, const Space& source, bool has_ref, const Space& target) {
-    PGStreamer streamer(source, fx.connection_pool_->tryAcquireConnection("single"), has_ref, size_t(1) << 24);
-    PGConsumer consumer(target, fx.connection_pool_->tryAcquireConnection("single"));
+// CopyDataspaceFromRemote without the network: dump on one connection, load on another.
+// Returns the consumer's error, empty on success; \p tamper may alter each part in transit.
+std::string copySpace(
+    OpenKVServerFixture& fx, const Space& source, bool has_ref, const Space& target,
+    const std::string& source_version, const std::string& target_version,
+    const std::function<void(TableData&)>& tamper = nullptr, int project_to = 0
+) {
+    PGStreamer streamer(
+        source, fx.connection_pool_->tryAcquireConnection("single"), has_ref, size_t(1) << 24, source_version, project_to
+    );
+    PGConsumer consumer(target, fx.connection_pool_->tryAcquireConnection("single"), target_version);
 
     SpaceStreamStatus status = SpaceStreamStatus::eOngoing;
     while (status == SpaceStreamStatus::eOngoing) {
         TableData td;
         status = streamer.stream(td);
+        if (status == SpaceStreamStatus::eFailed) {
+            return "the streamer failed at table " + td.m_tableName;
+        }
         td.m_copyStatus = static_cast<uint8_t>(status);
-        if (status == SpaceStreamStatus::eFailed || consumer.consume(td) == SpaceStreamStatus::eFailed) {
-            BOOST_TEST_MESSAGE("Streaming failed at table " << td.m_tableName);
-            return false;
+        if (tamper) {
+            tamper(td);
+        }
+        if (consumer.consume(td) == SpaceStreamStatus::eFailed) {
+            return consumer.error();
         }
     }
-    return true;
+    // As the handler does: a copy from an older source is upgraded like any space
+    auto repo = std::make_shared<OpenKVRepo>(fx.session_, fx.connection_pool_, oes::testing::TestConfig::make());
+    ErrorInfo err;
+    if (!repo->getSpaceConnection(target, err)) {
+        return "cannot upgrade the copy: " + err.m_message;
+    }
+    return consumer.finish() ? std::string() : consumer.error();
+}
+
+// copySpace() from a binary before the version exchange: no "schema" pseudo-table,
+// whole tables in their physical column order, a part per row
+std::string copySpaceFromLegacy(
+    OpenKVServerFixture& fx, const Space& source, const Space& target, const std::string& target_version
+) {
+    const auto source_conn = fx.connection_pool_->tryAcquireConnection("single");
+    PGconn* pg_conn = source_conn->pq_connection();
+    const PhysicalName phys(source.dbfile_, oes::postgresql::relational::IMPLICIT_LOWERCASE);
+    PGConsumer consumer(target, fx.connection_pool_->tryAcquireConnection("single"), target_version);
+
+    const std::vector<std::string> tables = { "uri", "xpa", "typ", "del_res", "res", "obj", "rel", "ary", "bin" };
+    for (size_t i = 0; i < tables.size(); ++i) {
+        const std::string cmd = fmt::format("COPY {}.{} TO STDOUT WITH (FORMAT BINARY)", phys.quotedName(), tables[i]);
+        PGresult* res = PQexec(pg_conn, cmd.c_str());
+        const bool copy_out = PQresultStatus(res) == PGRES_COPY_OUT;
+        PQclear(res);
+        BOOST_REQUIRE_MESSAGE(copy_out, cmd);
+
+        std::string error;
+        auto table_status = static_cast<uint8_t>(SpaceTableStreamStatus::eStart);
+        char* buffer = nullptr;
+        for (int len; (len = PQgetCopyData(pg_conn, &buffer, 0)) > 0;) {
+            TableData td;
+            td.m_tableName = tables[i];
+            td.m_tableData.assign(buffer, buffer + len);
+            PQfreemem(buffer);
+            td.m_tableStatus = table_status | static_cast<uint8_t>(SpaceTableStreamStatus::eFinalChunk);
+            td.m_copyStatus = static_cast<uint8_t>(SpaceStreamStatus::eOngoing);
+            if (error.empty() && consumer.consume(td) == SpaceStreamStatus::eFailed) {
+                error = consumer.error();
+            }
+            table_status = static_cast<uint8_t>(SpaceTableStreamStatus::eOngoing);
+        }
+        while (PGresult* end = PQgetResult(pg_conn)) {
+            PQclear(end);
+        }
+        if (!error.empty()) {
+            return error;
+        }
+
+        TableData done;
+        done.m_tableName = tables[i];
+        done.m_tableStatus = static_cast<uint8_t>(SpaceTableStreamStatus::eDone);
+        done.m_copyStatus = static_cast<uint8_t>(
+            i + 1 < tables.size() ? SpaceStreamStatus::eOngoing : SpaceStreamStatus::eDone
+        );
+        if (consumer.consume(done) == SpaceStreamStatus::eFailed) {
+            return consumer.error();
+        }
+    }
+    auto repo = std::make_shared<OpenKVRepo>(fx.session_, fx.connection_pool_, oes::testing::TestConfig::make());
+    ErrorInfo err;
+    if (!repo->getSpaceConnection(target, err)) {
+        return "cannot upgrade the copy: " + err.m_message;
+    }
+    return consumer.finish() ? std::string() : consumer.error();
+}
+
+bool streamSpace(OpenKVServerFixture& fx, const Space& source, bool has_ref, const Space& target) {
+    const auto conn = fx.admin_db_->handle();
+    const std::string error = copySpace(
+        fx, source, has_ref, target,
+        spaceSchemaVersion(conn, source.dbfile_), spaceSchemaVersion(conn, target.dbfile_)
+    );
+    if (!error.empty()) {
+        BOOST_TEST_MESSAGE("Streaming failed: " << error);
+    }
+    return error.empty();
+}
+
+int64_t rowCount(OpenKVServerFixture& fx, const Space& space, const std::string& table) {
+    const PhysicalName phys(space.dbfile_, oes::postgresql::relational::IMPLICIT_LOWERCASE);
+    return fx.admin_db_->handle()->executeInt64(fmt::format("SELECT count(*) FROM {}.{}", phys.quotedName(), table));
+}
+
+// Two spaces at the current version: a source holding a trajectory, and a new target
+std::pair<Space, Space> streamSpaces(OpenKVServerFixture& fx, data12::Object::Dataspace& target) {
+    const auto source = fx.putSpace("DataSpaceTest/StreamSource");
+    putTraj20(fx, source);
+    target = fx.putSpace("DataSpaceTest/StreamTarget");
+    return { fx.admin_db_->findSpace(source.m_path), fx.admin_db_->findSpace(target.m_path) };
+}
+
+// Columns, constraints, indexes, triggers, views, functions and sequences of a space, one per line,
+// with the schema name blanked; columns by name, not by position
+std::set<std::string> catalogOf(OpenKVServerFixture& fx, const Space& space) {
+    const PhysicalName phys(space.dbfile_, oes::postgresql::relational::IMPLICIT_LOWERCASE);
+    const std::string text = fx.admin_db_->handle()->executeString(fmt::format(R"sql(
+SELECT string_agg(line, E'\n') FROM (
+    SELECT format('column %s.%s %s %s %s', table_name, column_name, data_type, is_nullable, column_default) AS line
+      FROM information_schema.columns WHERE table_schema = {0}
+    UNION ALL
+    SELECT format('constraint %s %s %s', c.relname, con.conname, pg_get_constraintdef(con.oid))
+      FROM pg_constraint con JOIN pg_class c ON c.oid = con.conrelid WHERE c.relnamespace = {0}::regnamespace
+    UNION ALL
+    SELECT format('index %s %s', indexname, indexdef) FROM pg_indexes WHERE schemaname = {0}
+    UNION ALL
+    SELECT format('trigger %s', pg_get_triggerdef(t.oid))
+      FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid
+     WHERE c.relnamespace = {0}::regnamespace AND NOT t.tgisinternal
+    UNION ALL
+    SELECT format('view %s %s', viewname, definition) FROM pg_views WHERE schemaname = {0}
+    UNION ALL
+    SELECT format('function %s %s', proname, prosrc) FROM pg_proc WHERE pronamespace = {0}::regnamespace
+    UNION ALL
+    SELECT format('sequence %s', sequencename) FROM pg_sequences WHERE schemaname = {0}
+) AS catalog
+)sql", phys.singleQuotedName()));
+
+    std::set<std::string> lines;
+    std::istringstream stream(text);
+    for (std::string line; std::getline(stream, line);) {
+        for (size_t pos = line.find(phys.sqlText()); pos != std::string::npos; pos = line.find(phys.sqlText(), pos)) {
+            line.replace(pos, phys.sqlText().size(), "S");
+        }
+        lines.insert(line);
+    }
+    return lines;
+}
+
+std::string onlyIn(const std::set<std::string>& lhs, const std::set<std::string>& rhs) {
+    std::string only;
+    for (const auto& line : lhs) {
+        if (rhs.count(line) == 0) {
+            only += "\n  " + line;
+        }
+    }
+    return only;
 }
 
 void checkStreamedTraj20(
@@ -410,6 +562,305 @@ BOOST_AUTO_TEST_CASE(test_stream_space_with_references) {
     BOOST_REQUIRE(streamSpace(*this, child_space, true, target_space));
 
     checkStreamedTraj20(*this, target, traj);
+}
+
+// COPY keeps the source ids: the target's sequences must be reset past them
+BOOST_AUTO_TEST_CASE(test_stream_space_sequences) {
+    data12::Object::Dataspace target;
+    const auto [source_space, target_space] = streamSpaces(*this, target);
+    BOOST_REQUIRE(streamSpace(*this, source_space, false, target_space));
+
+    const auto prop = oes::testing::eml::prop22_mock(Guid::make());
+    putMockObj(target, prop);
+    putResqml22Ary(target, prop);
+    BOOST_CHECK_EQUAL(5u, objCount(target));
+    BOOST_CHECK_EQUAL(rowCount(*this, target_space, "ary"), rowCount(*this, source_space, "ary") + 1);
+}
+
+BOOST_AUTO_TEST_CASE(test_stream_space_version_mismatch) {
+    data12::Object::Dataspace target;
+    const auto [source_space, target_space] = streamSpaces(*this, target);
+    const std::string version = spaceSchemaVersion(admin_db_->handle(), source_space.dbfile_);
+    const std::string older = version.substr(0, version.find(':') + 1) + "16";
+
+    const std::string error = copySpace(*this, source_space, false, target_space, version, older);
+    BOOST_CHECK_MESSAGE(error.find("at schema 17, the target at 16") != std::string::npos, error);
+    BOOST_CHECK_EQUAL(rowCount(*this, target_space, "res"), 0);
+}
+
+// A source before the version exchange is taken as schema 15: a newer binary without it is refused
+BOOST_AUTO_TEST_CASE(test_stream_space_without_schema_version) {
+    data12::Object::Dataspace target;
+    const auto [source_space, target_space] = streamSpaces(*this, target);
+    const std::string version = spaceSchemaVersion(admin_db_->handle(), target_space.dbfile_);
+
+    const std::string error = copySpaceFromLegacy(*this, source_space, target_space, version);
+    BOOST_CHECK_MESSAGE(
+        error.find("Table ary: the source sends 15 fields per row, the target has 14 columns") != std::string::npos, error
+    );
+}
+
+// A 15 binary sends its space, upgraded to 15 when opened, as it lies on disk
+BOOST_AUTO_TEST_CASE(test_stream_space_from_legacy_source) {
+    const auto source = putSpace("DataSpaceTest/StreamSource");
+    const EmlObjMock traj = putTraj20(*this, source);
+    const Space source_space = admin_db_->findSpace(source.m_path);
+    const auto conn = admin_db_->handle();
+    BOOST_REQUIRE(downgradeSpaceSchemaVersion(conn, source_space.dbfile_, 15));
+    const auto target = putSpace("DataSpaceTest/StreamTarget");
+    const Space target_space = admin_db_->findSpace(target.m_path);
+
+    const std::string error = copySpaceFromLegacy(
+        *this, source_space, target_space, spaceSchemaVersion(conn, target_space.dbfile_)
+    );
+    BOOST_REQUIRE_MESSAGE(error.empty(), error);
+    BOOST_CHECK_EQUAL(OpenKVRepo::getSchemaVersion(conn, target_space.dbfile_), 17);
+    BOOST_CHECK_EQUAL(rowCount(*this, target_space, "ary"), rowCount(*this, source_space, "ary"));
+    checkStreamedTraj20(*this, target, traj);
+}
+
+BOOST_AUTO_TEST_CASE(test_stream_space_column_mismatch) {
+    data12::Object::Dataspace target;
+    const auto [source_space, target_space] = streamSpaces(*this, target);
+    const auto conn = admin_db_->handle();
+    const PhysicalName target_phys(target_space.dbfile_, oes::postgresql::relational::IMPLICIT_LOWERCASE);
+    conn->execute(fmt::format("ALTER TABLE {}.ary ADD COLUMN zz INT", target_phys.quotedName()));
+    const std::string version = spaceSchemaVersion(conn, source_space.dbfile_);
+
+    const std::string error = copySpace(*this, source_space, false, target_space, version, version);
+    BOOST_CHECK_MESSAGE(error.find("Table ary: the source sends the columns") != std::string::npos, error);
+    BOOST_CHECK_MESSAGE(error.find(", zz)") != std::string::npos, error);
+}
+
+// The field count of the first tuple is checked even when the column lists agree
+BOOST_AUTO_TEST_CASE(test_stream_space_field_count) {
+    data12::Object::Dataspace target;
+    const auto [source_space, target_space] = streamSpaces(*this, target);
+    const auto conn = admin_db_->handle();
+    const PhysicalName target_phys(target_space.dbfile_, oes::postgresql::relational::IMPLICIT_LOWERCASE);
+    conn->execute(fmt::format("ALTER TABLE {}.ary ADD COLUMN zz INT", target_phys.quotedName()));
+    const std::string target_columns = conn->executeString(fmt::format(
+        "SELECT string_agg(quote_ident(attname), ', ' ORDER BY attname) FROM pg_attribute"
+        " WHERE attrelid = '{}.ary'::regclass AND attnum > 0 AND NOT attisdropped",
+        target_phys.quotedName()
+    ));
+    const std::string version = spaceSchemaVersion(conn, source_space.dbfile_);
+
+    // A source announcing the target's columns but sending its own rows
+    const auto announce_target_columns = [&](TableData& td) {
+        if (td.m_tableName != "schema") {
+            return;
+        }
+        std::string text(td.m_tableData.begin(), td.m_tableData.end());
+        const size_t begin = text.find("\nary:") + 5;
+        text.replace(begin, text.find('\n', begin) - begin, target_columns);
+        td.m_tableData.assign(text.begin(), text.end());
+    };
+    const std::string error = copySpace(*this, source_space, false, target_space, version, version, announce_target_columns);
+    BOOST_CHECK_MESSAGE(error.find("Table ary: the source sends 15 fields per row, the target has 16 columns") != std::string::npos, error);
+}
+
+// Table names come from the source and end up in SQL: only the space tables are accepted
+BOOST_AUTO_TEST_CASE(test_stream_space_unexpected_table) {
+    data12::Object::Dataspace target;
+    const auto [source_space, target_space] = streamSpaces(*this, target);
+    const std::string version = spaceSchemaVersion(admin_db_->handle(), source_space.dbfile_);
+
+    const auto rename_uri = [](TableData& td) {
+        if (td.m_tableName == "uri") {
+            td.m_tableName = "admin.spaces";
+        }
+    };
+    const std::string error = copySpace(*this, source_space, false, target_space, version, version, rename_uri);
+    BOOST_CHECK_MESSAGE(error.find("Unexpected table in the stream: admin.spaces") != std::string::npos, error);
+    BOOST_CHECK_EQUAL(rowCount(*this, target_space, "res"), 0);
+}
+
+// A new space taken down to N, then upgraded, must look like a new space again
+BOOST_AUTO_TEST_CASE(test_downgrade_empty_space_round_trip) {
+    const auto conn = admin_db_->handle();
+    const Space fresh = admin_db_->findSpace(putSpace("DataSpaceTest/Fresh").m_path);
+    const auto expected = catalogOf(*this, fresh);
+    BOOST_REQUIRE_GT(expected.size(), 100u);
+    const int latest = OpenKVRepo::getSchemaVersion(conn, fresh.dbfile_);
+
+    for (int version = 15; version < latest; ++version) {
+        BOOST_TEST_CONTEXT("schema " << version) {
+            const auto space = putSpace(fmt::format("DataSpaceTest/RoundTrip{}", version));
+            const Space info = admin_db_->findSpace(space.m_path);
+            downgrade_empty_space(conn, info.dbfile_, latest, version);
+            BOOST_CHECK_EQUAL(OpenKVRepo::getSchemaVersion(conn, info.dbfile_), version);
+            if (version < 16) {
+                BOOST_CHECK(catalogOf(*this, info) != expected); // ary.epc_guid is gone
+            }
+
+            auto get_rpc = makeRpc(&OpenKVDiscovery::GetResources);
+            get_rpc.req_.m_context.m_uri = space.m_uri;
+            get_rpc.req_.m_context.m_depth = 1;
+            get_rpc.call();
+            BOOST_REQUIRE_EQUAL(OpenKVRepo::getSchemaVersion(conn, info.dbfile_), latest);
+
+            const auto round_trip = catalogOf(*this, info);
+            const std::string only_after = onlyIn(round_trip, expected);
+            const std::string only_new = onlyIn(expected, round_trip);
+            BOOST_CHECK_MESSAGE(only_after.empty(), "Only after the round trip:" << only_after);
+            BOOST_CHECK_MESSAGE(only_new.empty(), "Only in a new space:" << only_new);
+        }
+    }
+}
+
+BOOST_AUTO_TEST_CASE(test_downgrade_empty_space_refusals) {
+    const auto conn = admin_db_->handle();
+    const auto space = putSpace("DataSpaceTest/NotEmpty");
+    const Space info = admin_db_->findSpace(space.m_path);
+    const int latest = OpenKVRepo::getSchemaVersion(conn, info.dbfile_);
+
+    BOOST_CHECK_THROW(downgrade_empty_space(conn, info.dbfile_, latest, latest + 1), std::runtime_error);
+    putCrsObj(space);
+    BOOST_CHECK_THROW(downgrade_empty_space(conn, info.dbfile_, latest, 15), std::runtime_error);
+    BOOST_CHECK_EQUAL(OpenKVRepo::getSchemaVersion(conn, info.dbfile_), latest);
+}
+
+// A source at 15 (a space nobody upgraded, as an older binary sends it): the target is taken down
+// to 15, the rows copied, then 16 fills the containers from the XML as for any space it upgrades
+BOOST_AUTO_TEST_CASE(test_stream_space_from_older_source) {
+    data12::Object::Dataspace target;
+    const auto source = putSpace("DataSpaceTest/StreamSource");
+    const EmlObjMock traj = putTraj20(*this, source);
+    const Space source_space = admin_db_->findSpace(source.m_path);
+    const auto conn = admin_db_->handle();
+    BOOST_REQUIRE(downgradeSpaceSchemaVersion(conn, source_space.dbfile_, 15));
+    target = putSpace("DataSpaceTest/StreamTarget");
+    const Space target_space = admin_db_->findSpace(target.m_path);
+
+    const std::string error = copySpace(
+        *this, source_space, false, target_space,
+        spaceSchemaVersion(conn, source_space.dbfile_), spaceSchemaVersion(conn, target_space.dbfile_)
+    );
+    BOOST_REQUIRE_MESSAGE(error.empty(), error);
+    BOOST_CHECK_EQUAL(OpenKVRepo::getSchemaVersion(conn, target_space.dbfile_), 17);
+    BOOST_CHECK_EQUAL(rowCount(*this, target_space, "ary"), rowCount(*this, source_space, "ary"));
+    checkStreamedTraj20(*this, target, traj);
+}
+
+BOOST_AUTO_TEST_CASE(test_stream_space_from_older_source_refusals) {
+    data12::Object::Dataspace target;
+    const auto [source_space, target_space] = streamSpaces(*this, target);
+    const auto conn = admin_db_->handle();
+    const std::string version = spaceSchemaVersion(conn, target_space.dbfile_);
+    const std::string magic = version.substr(0, version.find(':') + 1);
+
+    putCrsObj(target);
+    const std::string error = copySpace(*this, source_space, false, target_space, magic + "15", version);
+    BOOST_CHECK_MESSAGE(error.find("holding resources") != std::string::npos, error);
+    BOOST_CHECK_EQUAL(OpenKVRepo::getSchemaVersion(conn, target_space.dbfile_), 17);
+}
+
+// A target with the exchange, at an older version: the source sends its space in that layout
+BOOST_AUTO_TEST_CASE(test_stream_space_to_older_target) {
+    const auto source = putSpace("DataSpaceTest/StreamSource");
+    const EmlObjMock traj = putTraj20(*this, source);
+    const Space source_space = admin_db_->findSpace(source.m_path);
+    const auto conn = admin_db_->handle();
+    const std::string source_version = spaceSchemaVersion(conn, source_space.dbfile_);
+    const std::string magic = source_version.substr(0, source_version.find(':') + 1);
+
+    for (int version : { 15, 16 }) {
+        BOOST_TEST_CONTEXT("schema " << version) {
+            const auto target = putSpace(fmt::format("DataSpaceTest/StreamTarget{}", version));
+            const Space target_space = admin_db_->findSpace(target.m_path);
+            downgrade_empty_space(conn, target_space.dbfile_, 17, version);
+            check_space_projection(conn, source_space.dbfile_, 17, version);
+
+            const std::string target_version = magic + std::to_string(version);
+            const std::string error = copySpace(
+                *this, source_space, false, target_space, target_version, target_version, nullptr, version
+            );
+            BOOST_REQUIRE_MESSAGE(error.empty(), error);
+            BOOST_CHECK_EQUAL(OpenKVRepo::getSchemaVersion(conn, target_space.dbfile_), 17);
+            BOOST_CHECK_EQUAL(rowCount(*this, target_space, "ary"), rowCount(*this, source_space, "ary"));
+            checkStreamedTraj20(*this, target, traj);
+        }
+    }
+}
+
+// A 15 binary as target: no "schema" part, the 15 columns in physical order, here with references
+BOOST_AUTO_TEST_CASE(test_stream_space_to_legacy_target) {
+    const auto origin = putSpace("DataSpaceTest/StreamOrigin");
+    const EmlObjMock traj = putTraj20(*this, origin);
+
+    auto lock_rpc = makeRpc(&OpenKVDataspaceOSDU::LockDataspaces);
+    lock_rpc.req_.m_uris.emplace(origin.m_path, origin.m_uri);
+    lock_rpc.req_.m_lock = true;
+    BOOST_REQUIRE(lock_rpc.call());
+
+    const auto child = putSpace("DataSpaceTest/StreamChild");
+    auto copy_rpc = makeRpc(&OpenKVDataspaceOSDU::CopyDataspacesContent);
+    copy_rpc.req_.m_dataspaces.emplace(origin.m_path, origin.m_uri);
+    copy_rpc.req_.m_targetDataspace = child.m_uri;
+    BOOST_REQUIRE(copy_rpc.call());
+    BOOST_REQUIRE_EQUAL(copy_rpc.res_.m_success.size(), 1u);
+
+    const auto conn = admin_db_->handle();
+    const auto target = putSpace("DataSpaceTest/StreamTarget");
+    const Space child_space = admin_db_->findSpace(child.m_path);
+    const Space target_space = admin_db_->findSpace(target.m_path);
+    BOOST_REQUIRE(admin_db_->spaceIncludesReference(child_space));
+    BOOST_REQUIRE(downgradeSpaceSchemaVersion(conn, target_space.dbfile_, 15));
+    const std::string target_version = spaceSchemaVersion(conn, target_space.dbfile_);
+
+    const std::string error = copySpace(*this, child_space, true, target_space, "", target_version, nullptr, 15);
+    BOOST_REQUIRE_MESSAGE(error.empty(), error);
+    BOOST_CHECK_EQUAL(OpenKVRepo::getSchemaVersion(conn, target_space.dbfile_), 17);
+    checkStreamedTraj20(*this, target, traj);
+}
+
+// Targets before the exchange overwrite their xdata with the "admin" part instead of merging it
+BOOST_AUTO_TEST_CASE(test_stream_space_xdata_to_legacy_target) {
+    data12::Object::Dataspace target;
+    auto [source_space, target_space] = streamSpaces(*this, target);
+    source_space.xdata_json_ = R"({"origin":"source"})";
+    const std::string version = spaceSchemaVersion(admin_db_->handle(), source_space.dbfile_);
+
+    for (const std::string& announced : { version, std::string() }) {
+        BOOST_TEST_CONTEXT("announced '" << announced << "'") {
+            PGStreamer streamer(
+                source_space, connection_pool_->tryAcquireConnection("single"), false, size_t(1) << 24, announced
+            );
+            int admin_parts = 0;
+            SpaceStreamStatus status = SpaceStreamStatus::eOngoing;
+            while (status == SpaceStreamStatus::eOngoing) {
+                TableData td;
+                status = streamer.stream(td);
+                admin_parts += td.m_tableName == "admin" ? 1 : 0;
+            }
+            BOOST_CHECK(status == SpaceStreamStatus::eDone);
+            BOOST_CHECK_EQUAL(admin_parts, announced.empty() ? 0 : 1);
+        }
+    }
+}
+
+// Two containers holding the same path cannot go to 15, which keys arrays by path
+BOOST_AUTO_TEST_CASE(test_space_projection_refusal) {
+    const auto source = putSpace("DataSpaceTest/StreamSource");
+    putTraj20(*this, source);
+    const Space source_space = admin_db_->findSpace(source.m_path);
+    const auto conn = admin_db_->handle();
+    const PhysicalName phys(source_space.dbfile_, oes::postgresql::relational::IMPLICIT_LOWERCASE);
+    conn->execute(fmt::format(R"sql(
+INSERT INTO {0}.ary (epc_guid, path, type, rank1, dim1, dim2, dim3, dim4, usize, zcomp, value, chunk_length)
+SELECT gen_random_uuid(), path, type, rank1, dim1, dim2, dim3, dim4, usize, zcomp, value, chunk_length
+  FROM {0}.ary LIMIT 1
+)sql", phys.quotedName()));
+
+    BOOST_CHECK_NO_THROW(check_space_projection(conn, source_space.dbfile_, 17, 16));
+    try {
+        check_space_projection(conn, source_space.dbfile_, 17, 15);
+        BOOST_ERROR("projected to 15");
+    } catch (const std::runtime_error& e) {
+        BOOST_CHECK_MESSAGE(std::string(e.what()).find("is in several containers") != std::string::npos, e.what());
+    }
+    BOOST_CHECK_THROW(check_space_projection(conn, source_space.dbfile_, 15, 16), std::runtime_error);
 }
 
 BOOST_AUTO_TEST_CASE(test_Dataspace24_PutDataspaces3) {

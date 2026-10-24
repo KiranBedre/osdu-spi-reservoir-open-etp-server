@@ -357,6 +357,7 @@ SELECT count(*) FROM upd
 
     // Upgrade a schema version
     // and return success if the schema was upgraded to the expected version
+    // Each step from 15 on must be mirrored in SpaceDDL: downgrade_empty_space, columns_added_after, check_space_projection
     bool OpenKVRepo::upgradeSpaceSchemaVersion(const std::string& dbFile, ErrorInfo& err, int current_version, int expected_version)
     {
         const postgresql::relational::PhysicalName phys(dbFile, postgresql::relational::IMPLICIT_LOWERCASE);

@@ -17,6 +17,7 @@
 #include <iostream>
 #include <sstream>
 #include <limits>
+#include <stdexcept>
 
 #include <oes/core/utils/config_enter_3rdparty.h>
 #include <fmt/format.h>
@@ -25,6 +26,7 @@
 #include "SpaceDDL.h"
 
 #include <oes/postgresql/Connection.h>
+#include <oes/postgresql/PhysicalName.h>
 #include <oes/postgresql/Statement.h>
 
 #include <oes/core/utils/Assert.h>
@@ -496,6 +498,71 @@ void add_relations_view(const Connection_ptr& conn, const std::string &schema) {
 // Unlike the other helpers here, \p schema is the bare (unquoted) name.
 void update_resources_view(const Connection_ptr& conn, const std::string &schema) {
     conn->execute(resources_view_ddl(schema));
+}
+
+//============================================================================
+
+// Each step undoes its up-step exactly, so the following upgrade recreates the same objects
+void downgrade_empty_space(const Connection_ptr& conn, const std::string& dbfile, int from_version, int to_version) {
+    int magic_cookie = 0;
+    const int latest = space_schema_versions(magic_cookie).back().version;
+    if (to_version > from_version || from_version > latest) {
+        throw std::runtime_error(fmt::format(
+            "Cannot take a space from schema {} down to {}", from_version, to_version
+        ));
+    }
+    const oes::postgresql::relational::PhysicalName phys(dbfile, oes::postgresql::relational::IMPLICIT_LOWERCASE);
+    const std::string schema = phys.quotedName();
+    if (conn->executeInt64(fmt::format("SELECT count(*) FROM (SELECT 1 FROM {}.res LIMIT 1) AS r", schema)) > 0) {
+        throw std::runtime_error("Cannot take a space holding resources to an older schema");
+    }
+
+    // 17 -> 16: data only, nothing to undo
+
+    // 16 -> 15: the path-only key. The resources view of 16 reads ary only through admin.array_summary(),
+    // and the 16 up-step replaces it anyway
+    if (from_version >= 16 && to_version < 16) {
+        conn->execute(fmt::format(R"sql(
+-- Also drops ary_epc_guid_path_key, as any constraint involving the column
+ALTER TABLE {0}.ary DROP COLUMN epc_guid;
+ALTER TABLE {0}.ary ADD CONSTRAINT ary_path_key UNIQUE (path);
+)sql", schema));
+    }
+
+    conn->execute(fmt::format("COMMENT ON SCHEMA {} IS '{}:{}'", schema, magic_cookie, to_version));
+}
+
+std::vector<std::string> columns_added_after(const std::string& table, int to_version) {
+    std::vector<std::string> columns;
+    if (to_version < 16 && table == "ary") {
+        columns.emplace_back("epc_guid");
+    }
+    return columns;
+}
+
+void check_space_projection(const Connection_ptr& conn, const std::string& dbfile, int from_version, int to_version) {
+    int magic_cookie = 0;
+    const int latest = space_schema_versions(magic_cookie).back().version;
+    if (to_version > from_version || from_version > latest) {
+        throw std::runtime_error(fmt::format(
+            "Cannot project a space from schema {} down to {}", from_version, to_version
+        ));
+    }
+    const oes::postgresql::relational::PhysicalName phys(dbfile, oes::postgresql::relational::IMPLICIT_LOWERCASE);
+
+    // 17 -> 16: the repaired containers stay valid at 16
+
+    // 16 -> 15: one container per path
+    if (from_version >= 16 && to_version < 16) {
+        const std::string path = conn->executeString(fmt::format(
+            "SELECT (SELECT path FROM {}.ary GROUP BY path HAVING count(*) > 1 LIMIT 1)", phys.quotedName()
+        ));
+        if (!path.empty()) {
+            throw std::runtime_error(fmt::format(
+                "Schema {} holds one array per path, the path {} is in several containers", to_version, path
+            ));
+        }
+    }
 }
 
 //============================================================================
