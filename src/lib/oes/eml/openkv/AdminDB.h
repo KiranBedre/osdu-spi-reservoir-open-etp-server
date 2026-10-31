@@ -163,10 +163,13 @@ public:
 private:
     using Statement_opt = std::optional<oes::postgresql::Statement>;
     void prepare(Statement_opt& stmt, std::string sql) const;
-    void update_clone_schema_function(Connection_ptr conn);
+    void add_clone_schema_function(Connection_ptr conn);
+    void add_update_space_rels_function(Connection_ptr conn);
+    void add_import_space_content_function(Connection_ptr conn);
+    void update_clone_schema_function_12(Connection_ptr conn);
 
-    void update_array_summary_function(Connection_ptr conn);
-    void update_import_space_content_function(Connection_ptr conn);
+    void update_array_summary_function_11(Connection_ptr conn);
+    void update_import_space_content_function_10(Connection_ptr conn);
 
 private:
     Connection_ptr conn_;

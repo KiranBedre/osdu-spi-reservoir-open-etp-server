@@ -309,11 +309,11 @@ public:
     oes::postgresql::Connection_ptr db() const { return db_; }
 
     EmlUri containing_dataspace_uri(EmlUri uri);
-    std::map<TypedUid,eml_int64> containing_dataspace_ids(const std::vector<TypedUid>& uids);
+    std::map<TypedUid,eml_int64> containing_dataspace_ids(const std::vector<TypedUid>& uids, size_t bulk_size);
     std::string get_destination_dataspace(eml_int64 id);
 
     std::vector<ResourceRef> get_dependencies( const std::string& uri );
-    std::vector<ReferenceRel> get_relations( const TypedUid& src );
+    std::vector<ReferenceRel> get_relations( const std::vector<TypedUid>& srcs, size_t bulk_size );
 
     static oes::postgresql::Statement_ptr get_get_object_stmt(oes::postgresql::Connection_ptr eml_db);
     std::vector<BulkObj_t> bulk_get_obj(
@@ -536,7 +536,6 @@ public:
     ObjRef to_obj_ref(
         eml_int64 obj_id, const std::string& xpath, const oes::common::epc::xml::DataObjectReference& r
     );
-    bool insert_rel(const ObjRef& ref);
     bool bulk_insert_rels(
         const std::vector<oes::eml::openkv::ObjRef> &refs,
         size_t bulk_size
@@ -557,12 +556,6 @@ public:
     // Also updates res_map_. Note: xdata_avro is always NULL in this path.
     std::unordered_map<size_t, eml_int64> bulk_insert_res(std::vector<ResData>&& data, const std::vector<size_t> index_map, size_t bulk_size);
 
-    // Catch up any missing-reference relations that were deferred for obj_id.
-    // Must be called after the object has been added to res_map_ via insert_res() or bulk_insert_res().
-    void resolve_missing_refs(eml_int64 obj_id, int typ_id, const oes::core::Guid& uid);
-    std::vector<std::tuple<eml_int64, int, oes::core::Guid> > delete_objects(
-        const std::vector<std::pair<int, oes::core::Guid> >& objects
-    );
     void update_dst_id(int64_t old_id, int64_t new_id);
     void bulk_update_dst_id(
         const std::vector<eml_int64>& old_ids,
@@ -622,7 +615,7 @@ public:
     }
 
     std::vector<int64_t> insert_references( const std::vector<ResourceRef>& references );
-    std::vector<int64_t> insert_relations( const std::vector<ReferenceRel>& relations );
+    void insert_relations( const std::vector<ReferenceRel>& relations, size_t bulk_size );
     std::vector<TypedUid> get_related_uuids( const std::vector<TypedUid>& uids );
 
     std::vector<ReferenceInfo> get_references_infos();
@@ -725,6 +718,7 @@ private:
     Statement_opt del_del_res_;
     Statement_opt sel_rel_by_dst_;
     Statement_opt ins_rel_;
+    Statement_opt bulk_ins_rel_;
     Statement_opt del_rel_;
     Statement_opt ins_ary_;
     Statement_opt bulk_ins_ary_;
@@ -747,7 +741,6 @@ private:
     Statement_opt del_ary_;
     //! Statement_opt sel_bin_;
     Statement_opt del_bin_;
-    std::string delete_objects_; // Needs string substitution before it can be prepared.
 
     //! Statement_opt sel_ary_val_;
     Statement_opt bulk_upd_ary_val_;
@@ -759,7 +752,6 @@ private:
     Statement_opt bulk_null_res_uuid_; // UPDATE res SET guid=NULL WHERE obj_id = ANY($1::bigint[])
 
     Statement_opt ins_rels_from_uid_;
-    Statement_opt ins_rels_xpa_;
 
     Statement_opt upd_dst_id_;
     Statement_opt bulk_upd_dst_id_;

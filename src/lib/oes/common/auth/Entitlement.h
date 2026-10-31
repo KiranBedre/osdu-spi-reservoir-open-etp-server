@@ -35,6 +35,8 @@ namespace oes::osdu::api {
     using EntitlementOSDUConfig_ptr = std::shared_ptr<EntitlementConfigBase>;
     class EntitlementDataspace;
     using EntitlementDataspace_ptr = std::shared_ptr<EntitlementDataspace>;
+    class EntitlementDataspaceGroupsBulk;
+    using EntitlementDataspaceGroupsBulk_ptr = std::shared_ptr<EntitlementDataspaceGroupsBulk>;
     class EntitlementDataspacePolicy;
     using EntitlementDataspacePolicy_ptr = std::shared_ptr<EntitlementDataspacePolicy>;
     class EntitlementError;
@@ -144,6 +146,12 @@ public:
     bool canReadDataspace(oes::osdu::api::EntitlementDataspace_ptr dataspace) override;
     bool canUpdateDataspace(oes::osdu::api::EntitlementDataspace_ptr dataspace) override;
     bool canDeleteDataspace(oes::osdu::api::EntitlementDataspace_ptr dataspace) override;
+
+    // Returns false if the records could not be listed (e.g. not supported by the storage service)
+    bool canReadUpdateDataspaceBulk(
+        oes::osdu::api::EntitlementDataspaceGroupsBulk_ptr dataspaces,
+        std::vector<bool>& can_read,
+        std::vector<bool>& can_update);
 
     bool registerDataspace(oes::osdu::api::EntitlementDataspace_ptr dataspace) override;
     bool unregisterDataspace(oes::osdu::api::EntitlementDataspace_ptr dataspace) override;

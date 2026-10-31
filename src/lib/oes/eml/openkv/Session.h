@@ -96,7 +96,7 @@ public:
     std::unordered_map<std::string, std::set<std::string>> activities_template_; // key is uuid and value is list of titles (OUTPUT_ONLY)
     std::unordered_map<std::string, std::set<std::string>> db_activities_template_; // key is uuid and value is list of titles (OUTPUT_ONLY)
 
-    bool upsertActivityObjs(SpaceWriter& writer, const std::string& user_id, const std::string& space_uri);
+    bool upsertActivityObjs(SpaceWriter& writer, const std::string& user_id, const std::string& space_uri, size_t bulk_size);
 
     static const std::string import_activity_template_uuid_;
     static const std::string import_activity_template_title_;

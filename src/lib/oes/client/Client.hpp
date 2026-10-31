@@ -25,6 +25,7 @@
 #include <cassert>
 #include <chrono>
 #include <future>
+#include <memory>
 #include <ostream>
 
 namespace oes::client {
@@ -150,16 +151,26 @@ struct RetRPC : BaseRPC {
     RES res_;
 
     using RcRes = std::pair<EtpResponseStatus, RES>;
-    oes::common::SpscQueue<RcRes> res_queue_;
+    size_t max_queue_depth_;
+    std::shared_ptr<oes::common::SpscQueue<RcRes>> res_queue_;
 
     RetRPC(
         PROTO* proto, MSG_t msg,
         size_t max_queue_depth = 10
     ) : proto_(proto)
       , msg_(msg)
-      , res_queue_(max_queue_depth, std::chrono::seconds(3))
+      , max_queue_depth_(max_queue_depth)
+      , res_queue_(std::make_shared<oes::common::SpscQueue<RcRes>>(max_queue_depth, std::chrono::seconds(3)))
     {
         assert(proto);
+    }
+
+    // Call before re-sending after a timeout: late responses to earlier sends are then dropped,
+    // instead of being consumed by (and corrupting) the next call.
+    void discard_pending() {
+        res_queue_ = std::make_shared<oes::common::SpscQueue<RcRes>>(
+            max_queue_depth_, res_queue_->timeout_
+        );
     }
 
     void async_send(REQ req, std::chrono::milliseconds timeout) {
@@ -168,12 +179,19 @@ struct RetRPC : BaseRPC {
         // reset res, just in case
         res_ = RES();
 
-        res_queue_.timeout_ = timeout;
+        res_queue_->timeout_ = timeout;
+
+        std::weak_ptr<oes::common::SpscQueue<RcRes>> weak_queue = res_queue_;
 
         (proto_->*msg_)(
             ireq, std::move(req),
-            [this](EtpResponseStatus rc, RES res) {
-                /*const bool timed_out =*/ res_queue_.enqueue(
+            [weak_queue](EtpResponseStatus rc, RES res) {
+                // Queue gone (RPC destroyed or discard_pending()): free the response right away.
+                auto res_queue = weak_queue.lock();
+                if (!res_queue) {
+                    return;
+                }
+                /*const bool timed_out =*/ res_queue->enqueue(
                     RcRes(std::move(rc), std::move(res))
                 );
                 // FIXME: What to do on timeout?
@@ -189,8 +207,8 @@ struct RetRPC : BaseRPC {
     ) {
         RcRes rc_res;
         bool deq_ok = timeout.count() > 0 ?
-            res_queue_.dequeue(rc_res, timeout) :
-            res_queue_.dequeue(rc_res);
+            res_queue_->dequeue(rc_res, timeout) :
+            res_queue_->dequeue(rc_res);
         if (!deq_ok) {
             err << REQ::info.label_ << " timed-out" << std::endl;
             return { false, std::future_status::timeout };
@@ -313,7 +331,8 @@ struct VoidRPC : BaseRPC {
         EtpCompleteHandler done_cb
     );
 
-    std::promise<bool> ready_;
+    std::shared_ptr<std::promise<EtpResponseStatus>> ready_;
+    std::future<EtpResponseStatus> ready_future_;
 
     PROTO* proto_;
     MSG_t msg_;
@@ -334,11 +353,19 @@ struct VoidRPC : BaseRPC {
             etp::MsgFlags::eACKNOWLEDGE_RECEIPT
         );
 
+        ready_ = std::make_shared<std::promise<EtpResponseStatus>>();
+        ready_future_ = ready_->get_future();
+
+        auto ready = ready_;
+
         (proto_->*msg_)(
-            ireq, std::move(req_),
-            [this](EtpResponseStatus rc) {
-                this->rc_ = std::move(rc);
-                ready_.set_value(true);
+            ireq, std::move(req),
+            [ready](EtpResponseStatus rc) {
+                try {
+                    ready->set_value(std::move(rc));
+                } catch (...) {
+                    // The caller may have timed out and discarded this RPC instance.
+                }
             }
         );
 
@@ -351,12 +378,13 @@ struct VoidRPC : BaseRPC {
         // FIXME: Waiting on a void call is problematic in ETP. We set the
         // ACKNOWLEDGE flag, but it's often sent (if at all...) before the
         // message is processed server-side, i.e. when just "received".
-        std::future_status status = ready_.get_future().wait_for(timeout);
+        std::future_status status = ready_future_.wait_for(timeout);
 
         received();
 
         switch (status) {
         case std::future_status::ready:
+            rc_ = ready_future_.get();
             if (rc_.ok) {
                 return { true, status };
             } else {

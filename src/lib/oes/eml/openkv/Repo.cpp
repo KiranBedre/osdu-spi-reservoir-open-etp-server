@@ -357,6 +357,7 @@ SELECT count(*) FROM upd
 
     // Upgrade a schema version
     // and return success if the schema was upgraded to the expected version
+    // Each step from 15 on must be mirrored in SpaceDDL: downgrade_empty_space, columns_added_after, check_space_projection
     bool OpenKVRepo::upgradeSpaceSchemaVersion(const std::string& dbFile, ErrorInfo& err, int current_version, int expected_version)
     {
         const postgresql::relational::PhysicalName phys(dbFile, postgresql::relational::IMPLICIT_LOWERCASE);
@@ -501,6 +502,16 @@ SELECT count(*) FROM upd
             }catch(std::exception&){
                 err.m_code = ErrorCodes::EINVALID_STATE;
                 err.m_message = fmt::format("Cannot upgrade schema: {} from version 16 to 17", dbFile);
+                return false;
+            }
+        }
+        if(current_version<18 && expected_version>=18){
+            try{
+                update_space_rel_triggers(getDbConnection(), phys.sqlText());
+                add_lookup_indexes(getDbConnection(), phys.sqlText());
+            }catch(std::exception&){
+                err.m_code = ErrorCodes::EINVALID_STATE;
+                err.m_message = fmt::format("Cannot upgrade schema: {} from version 17 to 18", dbFile);
                 return false;
             }
         }

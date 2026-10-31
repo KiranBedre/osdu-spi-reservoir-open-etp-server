@@ -60,6 +60,16 @@ void insertChunkFlag(uint8_t& flags);
  */
 void insertFinalChunkFlag(uint8_t& flags);
 
+/**
+ * @brief Schema version of a space, as "<magic>:<version>" (the comment of its PostgreSQL schema)
+ */
+std::string spaceSchemaVersion(const Connection_ptr& conn, const std::string& dbfile);
+
+/**
+ * @brief The version number of a "<magic>:<version>" string, -1 if it is not one of ours
+ */
+int schemaVersionNumber(const std::string& schema_version);
+
 
 /**
  * @brief PGStream used as base class to manage tables data stream
@@ -84,7 +94,10 @@ protected:
  */
 class PGStreamer final: protected PGStream {
 public:
-    PGStreamer(const Space& space, Connection_ptr conn, const bool has_ref, const size_t max_msg_size);
+    //! A non-empty \p schema_version is sent first, with the column lists, as the "schema" pseudo-table;
+    //! without it, the columns come in physical order, as for a target before the version exchange.
+    //! A positive \p project_to leaves out the columns added after that version.
+    PGStreamer(const Space& space, Connection_ptr conn, const bool has_ref, const size_t max_msg_size, std::string schema_version, int project_to = 0);
     ~PGStreamer();
 
     PGStreamer() = delete;
@@ -104,7 +117,11 @@ private:
  */
 class PGConsumer final: protected PGStream {
 public:
-    PGConsumer(const Space& space, Connection_ptr conn);
+    //! The stream starts with the "schema" pseudo-table, at \p schema_version or older; without it,
+    //! the source is a 15 binary sending whole tables in their physical column order.
+    //! From an older source, the empty target is taken down to the source's version first,
+    //! and must be upgraded after the copy.
+    PGConsumer(const Space& space, Connection_ptr conn, std::string schema_version);
     ~PGConsumer();
 
     PGConsumer() = delete;
@@ -112,6 +129,11 @@ public:
     PGConsumer& operator=(PGConsumer&) = delete;
 
     SpaceStreamStatus consume(TableData& td);
+
+    //! Resets the sequences after the last table, since COPY keeps the source ids
+    bool finish();
+
+    const std::string& error() const;
 
 private:
     class Impl_;

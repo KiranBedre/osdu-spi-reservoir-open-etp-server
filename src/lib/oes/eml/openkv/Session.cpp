@@ -227,7 +227,7 @@ std::vector<TransactionActControl::ObjMapVal_t> TransactionActControl::get_activ
     };
 }
 
-bool TransactionActControl::upsertActivityObjs(SpaceWriter& writer, const std::string& user_id, const std::string& space_uri) {
+bool TransactionActControl::upsertActivityObjs(SpaceWriter& writer, const std::string& user_id, const std::string& space_uri, size_t bulk_size) {
     bool has_nullified_guid = false ;
     if( !has_import_template_already_ ){
         // Attempt to find the template
@@ -297,13 +297,7 @@ bool TransactionActControl::upsertActivityObjs(SpaceWriter& writer, const std::s
         }
     }
 
-    if (refs.size() < 50) {
-        for (const auto& ref: refs) {
-            writer.insert_rel(ref);
-        }
-    } else {
-        writer.bulk_insert_rels(refs, 50);
-    }
+    writer.bulk_insert_rels(refs, bulk_size);
 
     return has_nullified_guid ;
 }
