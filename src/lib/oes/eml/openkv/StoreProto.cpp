@@ -249,7 +249,8 @@ void upsertObjs(
     const std::vector<
         const std::map<std::string, DataObject>::value_type*
     >& entries,
-    TransactionActControl* trans_ctl_ptr
+    TransactionActControl* trans_ctl_ptr,
+    const size_t bulk_size
 ) {
 
     // cppcheck-suppress unreadVariable
@@ -321,7 +322,7 @@ void upsertObjs(
 
         // Convert extracted XML refs, to OpenKV refs
         for (const auto& xml_ref : scan.refs_) {
-            // the ref's target is not resolved now, but in .insert_rel() later below
+            // the ref's target is not resolved now, but in .bulk_insert_rels() later below
             refs.emplace_back(w.to_obj_ref(obj_id, xml_ref.first, xml_ref.second));
         }
 
@@ -377,18 +378,9 @@ void upsertObjs(
         std::string("SpaceWriter.") + __func__ + ".insertRels",
         {{"count", std::to_string(refs.size())}});
     
-    if( refs.size() < 50 ) {
-        // There are less refs to be inserted than the bulk beffer size, send them one by one.
-        for (const ObjRef& ref : refs) {
-            // errors (i.e. missing refs) are tracked inside the writer,
-            // and calling-code checks missing_reference_count(), no need
-            // to track insert_rel()'s returned code.
-            w.insert_rel(ref);
-        }
-    } else {
-        // Attempt to insert by bulk statements to improve performances.
-        w.bulk_insert_rels(refs, 50);
-    }   
+    // errors (i.e. missing refs) are tracked inside the writer,
+    // and calling-code checks missing_reference_count().
+    w.bulk_insert_rels(refs, bulk_size);
 }
 
 void bulkUpsertObjs(
@@ -707,7 +699,7 @@ void bulkUpsertObjs(
         obj_ids,
         typ_ids,
         guids,
-        bulk_size // change to 50
+        bulk_size
     );
 
     // PHASE 4: Collect and bulk insert all references
@@ -717,7 +709,7 @@ void bulkUpsertObjs(
 
         // Convert extracted XML refs, to OpenKV refs
         for (const auto& xml_ref : entry_proc.scan.refs_) {
-            // the ref's target is not resolved now, but in .insert_rel() later below
+            // the ref's target is not resolved now, but in .bulk_insert_rels() later below
             refs.emplace_back(w.to_obj_ref(obj_id, xml_ref.first, xml_ref.second));
         }
     }
@@ -1105,7 +1097,7 @@ void OpenKVStore::GetDataObjects( // messageTypeId 1
                     ids.emplace_back(stored_uid(uri));
                 }
             }
-            const std::map<TypedUid, eml_int64> ml_ids = reader.containing_dataspace_ids(ids);
+            const std::map<TypedUid, eml_int64> ml_ids = reader.containing_dataspace_ids(ids, session->pg_bulk_size_);
             std::map<eml_int64,std::string> id2ds;
             for(const ObjNK& nk : nks){
                 std::string i_uri= std::get<2>(nk)->second;
@@ -1446,7 +1438,7 @@ void OpenKVStore::GetDataObjectsBULK( // messageTypeId 1
                 }
             }
 
-            const std::map<TypedUid, eml_int64> ml_ids = reader.containing_dataspace_ids(ids); //TODO optimize it?
+            const std::map<TypedUid, eml_int64> ml_ids = reader.containing_dataspace_ids(ids, BULK_SIZE); //TODO optimize it?
             std::map<eml_int64,std::string> id2ds;
             
             for (size_t i{0}; i < nks.size(); ++i) {
@@ -1826,7 +1818,7 @@ void OpenKVStore::PutDataObjectsImpl(
             // This may lead to interleaved pages for obj and ary tables.
             // Accumulate arys to update instead, to do it in one go afterwards???
             upsertObjs(
-                reply, *writer, *p_orphan_arys, *p_missing_arys, obj_entries, ctl_ptr
+                reply, *writer, *p_orphan_arys, *p_missing_arys, obj_entries, ctl_ptr, BULK_SIZE
             );
         }
 
@@ -1879,7 +1871,7 @@ void OpenKVStore::PutDataObjectsImpl(
         }
 
         if (local_tx.isLocal() && session->check_activities_ && ctl_ptr != nullptr) {
-            if(ctl_ptr->upsertActivityObjs(*writer, session->userName(), entry.first)) {
+            if(ctl_ptr->upsertActivityObjs(*writer, session->userName(), entry.first, BULK_SIZE)) {
                 writer->delete_null_res();
             }
             local_tx.get_trans_control()->erase(entry.first);
@@ -2106,46 +2098,30 @@ void OpenKVStore::DeleteDataObjects( // messageTypeId 3
 
         auto& w = *writer;
 
-        // Nullify the guid of the resource to delete it later
-        std::vector<std::pair<int, oes::core::Guid> > batch ;
-        std::unordered_map<std::string, std::pair<std::string, std::string> > cids ;
+        // Nullify the guids of the resources, delete_null_res() deletes them
+        std::vector<int> typ_ids;
+        std::vector<oes::core::Guid> guids;
+        std::vector<int> indexes;
         for (const Entry* uri_entry : uri_entries) {
-            const std::string& cid = uri_entry->first;
-            const std::string& uri_str = uri_entry->second;
-            EmlUri uri = EmlUri::parse(uri_str);
+            EmlUri uri = EmlUri::parse(uri_entry->second);
             assert(uri.isObj());
 
             const eml_int64 uri_id = ml_id(w, uri.ml_);
-            const int typ_id = w.typ_of(uri_id, uri.obj_type_);
-
-            if (uri_entries.empty()) {
-                // Less than 0 objects to delete, do it one by one.
-                if (w.null_res_guid(typ_id, uri.guid_)) {
-                    auto it_ary = reply.addMapPart(cid);
-                    auto& ary = it_ary.first->second;
-                    ary.m_values.push_back(uri_str);
-                }else{
-                    reply.addError(cid, ENOT_FOUND, "Object not Found");
-                }
-            } else {
-                // delete in a single batch to minimize the number of queries.
-                batch.emplace_back(std::make_pair( typ_id, uri.guid_)) ;
-                cids[uri.guid_.toXmlString()] = {cid, uri_str} ;
-            }
+            indexes.push_back(static_cast<int>(typ_ids.size()));
+            typ_ids.push_back(w.typ_of(uri_id, uri.obj_type_));
+            guids.push_back(uri.guid_);
         }
 
-        if (!batch.empty()) {
-            auto results = w.delete_objects(batch) ;
-            for (const auto& [obj_id, typ_id, uid]: results) {
-                if ( obj_id == -1) {
-                    reply.addError(cids[uid.toXmlString()].first, ENOT_FOUND, "Object not Found");
-                    continue ;
-                }
-                const auto key = uid.toXmlString();
-                auto it_ary = reply.addMapPart(cids[key].first);
-                auto& ary = it_ary.first->second;
-                ary.m_values.push_back(cids[key].second);
+        const std::vector<eml_int64> old_ids = w.bulk_null_res_guids(typ_ids, guids, indexes, session->pg_bulk_size_);
+        for (size_t i = 0; i < uri_entries.size(); ++i) {
+            const std::string& cid = uri_entries[i]->first;
+            if (old_ids.at(i) == -1) {
+                reply.addError(cid, ENOT_FOUND, "Object not Found");
+                continue;
             }
+            auto it_ary = reply.addMapPart(cid);
+            auto& ary = it_ary.first->second;
+            ary.m_values.push_back(uri_entries[i]->second);
         }
 
         // Check if the session has not been terminated, since above call can take time

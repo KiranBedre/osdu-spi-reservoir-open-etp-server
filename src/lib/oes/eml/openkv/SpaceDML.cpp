@@ -534,14 +534,16 @@ SELECT target_sp
 )sql"
     );
     prepare(get_rel_spc_, R"sql(
-SELECT uri.ml || '.' || typ.xml,
-       res.guid,
-       res.space_rel_id
-  FROM res
-  JOIN typ ON typ.id = res.typ_id
+SELECT tgt.etp_type,
+       r.guid,
+       r.space_rel_id
+  FROM res AS r
+  JOIN typ ON typ.id = r.typ_id
   JOIN uri ON uri.id = typ.uri_id
- WHERE res.space_rel_id IS NOT NULL
-   AND res.guid = ANY($1::uuid[])
+  JOIN UNNEST($1::uuid[], $2::text[]) AS tgt(guid, etp_type)
+    ON r.guid = tgt.guid
+   AND uri.ml || '.' || typ.xml = tgt.etp_type
+ WHERE r.space_rel_id IS NOT NULL
 )sql"
     );
     prepare(get_dst_spc_, R"sql(
@@ -895,44 +897,53 @@ EmlUri SpaceReader::containing_dataspace_uri(EmlUri uri){
  * \param uids The ETP type and guid of the resources
  * \return A map of resource identities, as stored, and their corresponding dataspace ids
 */
-std::map<TypedUid,eml_int64> SpaceReader::containing_dataspace_ids(const std::vector<TypedUid>& uids){
-    
-    // Decompose the vector of Guids into arrays of 50 elements
-    std::vector<std::vector<Guid>> uid_array_slices;
-    const int nb_element = 20;
-    std::vector<Guid> array_slice1;
-    for (size_t i = 0; i < uids.size(); ++i) {
-        array_slice1.push_back(uids[i].second);
-        if (array_slice1.size() == nb_element || i == uids.size() - 1) {
-            uid_array_slices.push_back(array_slice1);
-            array_slice1.clear();
-        }
+std::map<TypedUid,eml_int64> SpaceReader::containing_dataspace_ids(const std::vector<TypedUid>& uids, size_t bulk_size){
+    std::map<TypedUid,eml_int64> spc_ids;
+    if (uids.empty()) {
+        return spc_ids;
+    }
+    std::vector<Guid> guids;
+    std::vector<std::string> types;
+    guids.reserve(uids.size());
+    types.reserve(uids.size());
+    for (const auto& [etp_type, guid] : uids) {
+        types.push_back(etp_type);
+        guids.push_back(guid);
     }
 
-    // process individual arrays
-    std::map<TypedUid,eml_int64> spc_ids;
-    for (auto& array_slice : uid_array_slices) {
-        if( array_slice.empty() ){
-            continue;
-        }
+    if (guids.size() < bulk_size) {
+        bulk_size = guids.size();
+    }
+    auto remaining = guids.size();
+    auto it_guids_beg = guids.cbegin();
+    auto it_types_beg = types.cbegin();
 
-        auto stmt = *get_rel_spc_;
-        try {
-            stmt.bind(1,array_slice);
+    auto stmt = *get_rel_spc_;
+    try {
+        while (remaining > 0) {
+            if (remaining < bulk_size) {
+                bulk_size = remaining;
+            }
+            stmt.bind<Guid>(1, it_guids_beg, it_guids_beg + bulk_size);
+            stmt.bindTextArray(2, it_types_beg, it_types_beg + bulk_size);
             while (stmt.step()) {
                 spc_ids.insert({{stmt.getString(0),stmt.getGuid(1)},stmt.getInt64(2)});
             }
             stmt.reset();
-        } catch (const std::exception& e) {
-            std::string uid_str;
-            for(auto& sl : array_slice){
-                uid_str += sl.toXmlString() + ", ";
-            }
-            OES_ERROR("Error while getting import space with guids [{}]: {}", uid_str, e.what());
-            throw std::runtime_error(
-                fmt::format("Error while getting import space with guids [{}]: {}", uid_str, e.what())
-            );
+
+            it_guids_beg += bulk_size;
+            it_types_beg += bulk_size;
+            remaining -= bulk_size;
         }
+    } catch (const std::exception& e) {
+        std::string uid_str;
+        for (const auto& [etp_type, guid] : uids) {
+            uid_str += etp_type + '(' + guid.toXmlString() + "), ";
+        }
+        OES_ERROR("Error while getting import space of [{}]: {}", uid_str, e.what());
+        throw std::runtime_error(
+            fmt::format("Error while getting import space of [{}]: {}", uid_str, e.what())
+        );
     }
 
     return spc_ids;
@@ -1057,46 +1068,56 @@ SELECT guid,
 }
 
 /*!
- * Get the Relation information where the given resource is the source
+ * Get the Relation information where the given resources are the source
 */
-std::vector<ReferenceRel> SpaceReader::get_relations( const TypedUid& src )
+std::vector<ReferenceRel> SpaceReader::get_relations( const std::vector<TypedUid>& srcs, size_t bulk_size )
 {
     if(!sel_rels_){
         prepare(sel_rels_, R"sql(
 SELECT uri1.ml || '.' || typ1.xml, res1.guid, res1.version,
        uri2.ml || '.' || typ2.xml, res2.guid, res2.version, xpa.th, rel.cnt
-  FROM res AS res1
-  JOIN typ AS typ1 ON typ1.id = res1.typ_id
-  JOIN uri AS uri1 ON uri1.id = typ1.uri_id
+  FROM UNNEST($1::uuid[], $2::text[]) AS src(guid, etp_type)
+  JOIN typ AS typ1 ON true
+  JOIN uri AS uri1 ON uri1.id = typ1.uri_id AND uri1.ml || '.' || typ1.xml = src.etp_type
+  JOIN res AS res1 ON res1.typ_id = typ1.id AND res1.guid = src.guid
   JOIN rel AS rel ON rel.obj_id = res1.obj_id
   JOIN res AS res2 ON rel.dst_id = res2.obj_id
   JOIN typ AS typ2 ON typ2.id = res2.typ_id
   JOIN uri AS uri2 ON uri2.id = typ2.uri_id
   JOIN xpa ON rel.xpa_id = xpa.id
- WHERE res1.guid = $1
-   AND uri1.ml || '.' || typ1.xml = $2
---and res1.version = $3
         )sql"
         );
     }
-    sel_rels_->bind(1, src.second.begin(), int(Guid::static_size()));
-    sel_rels_->bind(2, src.first);
-    // sel_rels_->bind(3, version);
-    std::vector<ReferenceRel> rels;
-    while(sel_rels_->step()){
-        ReferenceRel ref;
-        int res_idx = 0;
-        ref.src_type = sel_rels_->getString(res_idx++);
-        ref.src_guid = sel_rels_->getGuid(res_idx++);
-        ref.src_version = sel_rels_->getString(res_idx++);
-        ref.dst_type = sel_rels_->getString(res_idx++);
-        ref.dst_guid = sel_rels_->getGuid(res_idx++);
-        ref.dst_version = sel_rels_->getString(res_idx++);
-        ref.xpath = sel_rels_->getString(res_idx++);
-        ref.cnt = sel_rels_->getInt(res_idx++);
-        rels.push_back(ref);
+    std::vector<oes::core::Guid> guids;
+    std::vector<std::string> types;
+    guids.reserve(srcs.size());
+    types.reserve(srcs.size());
+    for (const auto& [etp_type, guid] : srcs) {
+        guids.push_back(guid);
+        types.push_back(etp_type);
     }
-    sel_rels_->reset();
+
+    std::vector<ReferenceRel> rels;
+    const size_t chunk = std::max<size_t>(bulk_size, 1);
+    for (size_t start = 0; start < srcs.size(); start += chunk) {
+        const size_t end = std::min(start + chunk, srcs.size());
+        sel_rels_->bind<oes::core::Guid>(1, guids.cbegin() + start, guids.cbegin() + end);
+        sel_rels_->bindTextArray(2, types.cbegin() + start, types.cbegin() + end);
+        while(sel_rels_->step()){
+            ReferenceRel ref;
+            int res_idx = 0;
+            ref.src_type = sel_rels_->getString(res_idx++);
+            ref.src_guid = sel_rels_->getGuid(res_idx++);
+            ref.src_version = sel_rels_->getString(res_idx++);
+            ref.dst_type = sel_rels_->getString(res_idx++);
+            ref.dst_guid = sel_rels_->getGuid(res_idx++);
+            ref.dst_version = sel_rels_->getString(res_idx++);
+            ref.xpath = sel_rels_->getString(res_idx++);
+            ref.cnt = sel_rels_->getInt(res_idx++);
+            rels.push_back(ref);
+        }
+        sel_rels_->reset();
+    }
     return rels;
 }
 
@@ -1639,6 +1660,21 @@ INSERT INTO rel (
 )sql"
     );
 
+    // GROUP BY folds duplicates: an upsert cannot update the same row twice.
+    prepare(bulk_ins_rel_, R"sql(
+INSERT INTO rel (obj_id, dst_id, xpa_id, cnt)
+SELECT u.obj_id, u.dst_id, u.xpa_id, count(*)
+  FROM UNNEST(
+    $1::bigint[],
+    $2::bigint[],
+    $3::bigint[]
+  ) AS u(obj_id, dst_id, xpa_id)
+ GROUP BY u.obj_id, u.dst_id, u.xpa_id
+    ON CONFLICT (obj_id, dst_id, xpa_id)
+    DO UPDATE SET cnt = rel.cnt + EXCLUDED.cnt
+)sql"
+    );
+
     prepare(ins_ary_, R"sql(
 INSERT INTO ary (
     obj_id,
@@ -1881,9 +1917,12 @@ SELECT tgt.idx
      AND uri.ml || '.' || typ.xml = tgt.etp_type
 )sql"
     );
+    // Both spellings, as is_ext_part_ref(); no ML filter, older spaces may hold external parts under resqml20
     prepare(res_guid_check_, R"sql(
 SELECT FROM res
- WHERE guid = $1
+  JOIN typ ON typ.id = res.typ_id
+ WHERE res.guid = $1
+   AND typ.xml LIKE '%EpcExternalPartReference'
 )sql"
     );
 
@@ -1969,76 +2008,6 @@ SELECT uri.ml || '.' || typ.xml,
   JOIN res ON res.obj_id = ids.obj_id
   JOIN typ ON typ.id = res.typ_id
   JOIN uri ON uri.id = typ.uri_id
-)sql");
-    delete_objects_ = std::string(R"sql(
-CREATE TEMP TABLE {} (
-    typ_id INT,
-    guid uuid,
-    obj_id bigint
-) ON COMMIT DROP;
-
-WITH val AS (
-    SELECT typ_id,
-           guid::uuid
-      FROM (
-               VALUES {}
-           ) s(typ_id, guid)
-)
-INSERT INTO {}
-SELECT v.typ_id,
-       v.guid,
-       COALESCE(r.obj_id, -1)::bigint AS obj_id
-  FROM val v
-  LEFT JOIN res r ON r.typ_id = v.typ_id
-                 AND r.guid = v.guid;
-
--- Copy deleted res into del_res
-INSERT INTO del_res (
-    guid,
-    typ_id,
-    name,
-    version,
-    createdAt,
-    updatedAt,
-    createdBy,
-    updatedBy,
-    xdata_json,
-    xdata_avro,
-    storeCreated,
-    storeUpdated,
-    storeDeleted
-    )
-SELECT r.guid,
-       r.typ_id,
-       name,
-       version,
-       createdAt,
-       updatedAt,
-       createdBy,
-       updatedBy,
-       xdata_json,
-       xdata_avro,
-       storeCreated,
-       storeUpdated,
-       now()
-  FROM res r
-  JOIN {} ON r.obj_id = {}.obj_id
- WHERE r.guid IS NOT NULL
-   AND {}.obj_id != (-1)
-    ON CONFLICT ON CONSTRAINT del_res_guid_typ_id_key DO NOTHING;
-
--- Nullify guid
-UPDATE res r
-   SET guid = NULL
-  FROM {}
- WHERE r.obj_id = {}.obj_id
-   AND {}.obj_id != (-1);
-
--- Select the temp table content so we can give back objects that were deleted, and objects which were not found.
-SELECT obj_id,
-       typ_id,
-       guid
-  FROM {};
 )sql");
 
     // Note that 0 and 1 are stored more efficiently in SQLite than >1,
@@ -2210,7 +2179,7 @@ bool SpaceWriter::check_ary_container(const TypedUid& container, bool in_transac
 
 /*
 * Clients before (type, guid) unicity name EpcExternalPartReference after its XML element,
-* i.e. without the obj_ of its xsi:type, so it is matched by guid alone.
+* i.e. without the obj_ of its xsi:type, so it is matched by guid among external parts of either spelling.
 */
 bool SpaceWriter::has_ary_container(const TypedUid& container){
     const bool by_guid = is_ext_part_ref(container.first);
@@ -2859,26 +2828,6 @@ auto SpaceWriter::to_obj_ref(
     return ref;
 }
 
-bool SpaceWriter::insert_rel(const ObjRef& ref) {
-    if (!ref.res_key.second.isValid()) {
-        return false; // warned in to_obj_ref()
-    }
-    auto dst_found = res_map_.find(ref.res_key);
-    if (dst_found == res_map_.end()) {
-        if (fill_res_map()) {
-            // entries added, so retry the lookup
-            dst_found = res_map_.find(ref.res_key);
-        }
-        if (dst_found == res_map_.end()) {
-           ++missing_refs_[ref];
-            return false;
-        }
-    }
-    const eml_int64 dst_id = dst_found->second;
-    do_insert_rel(ref, dst_id);
-    return true;
-}
-
 bool SpaceWriter::bulk_insert_rels(const std::vector<oes::eml::openkv::ObjRef>& refs, size_t bulk_size) {
     bool missing = false;
     std::vector<struct RelToAdd> relations;
@@ -3258,29 +3207,6 @@ void SpaceWriter::bulk_insert_missing_refs(
 }
 
 /*!
- * Resolve any deferred missing-reference relations for a newly inserted object.
- * Must be called after the object is in res_map_ (i.e., after insert_res / bulk_insert_res).
- */
-void SpaceWriter::resolve_missing_refs(eml_int64 obj_id, int typ_id, const oes::core::Guid& uid)
-{
-    if (missing_refs_.empty()) return;
-
-    ResKey obj_key{ typ_id, uid };
-    ObjRef ref{ 0, 0, obj_key };
-    auto ref_iter = missing_refs_.lower_bound(ref);
-    int64_t count = 0;
-    while (ref_iter != missing_refs_.end() && ref_iter->first.res_key == obj_key) {
-        const int ref_count = ref_iter->second;
-        for (int i = 0; i < ref_count; ++i) {
-            do_insert_rel(ref_iter->first, obj_id);
-            ++count;
-        }
-        ref_iter = missing_refs_.erase(ref_iter);
-    }
-    OES_RELEASE_UNUSED(count);
-}
-
-/*!
 * Nulls the guid of the resource with the given UUID.
 */
 bool SpaceWriter::null_res_guid(int typ_id, const oes::core::Guid& uid)
@@ -3300,75 +3226,6 @@ bool SpaceWriter::null_res_guid(int typ_id, const oes::core::Guid& uid)
     stmt.reset();
     res_map_.erase(ResKey{ typ_id, uid });
     return updated_row == 1;
-}
-
-namespace postgresql_utils {
-int getInt( const oes::postgresql::PGresult_uptr& result, int row, int col) {
-    int num_bytes = PQgetlength(result.get(), row, col);
-    char* value = PQgetvalue(result.get(), row, col);
-    if (num_bytes == 0 || !value) {
-        return 0;
-    }
-    return std::stoi(value) ;
-}
-
-eml_int64 getInt64( const oes::postgresql::PGresult_uptr& result, int row, int col) {
-    int num_bytes = PQgetlength(result.get(), row, col);
-    char* value = PQgetvalue(result.get(), row, col);
-    if (num_bytes == 0 || !value) {
-        return 0;
-    }
-    return std::stoll(value) ;
-}
-
-
-oes::core::Guid getGuid( const oes::postgresql::PGresult_uptr& result, int row, int col) {
-    int num_bytes = PQgetlength(result.get(), row, col);
-    char* value = PQgetvalue(result.get(), row, col);
-    if (num_bytes == 0 || !value) {
-        return oes::core::Guid::invalid() ;
-    }
-    return oes::core::Guid::parse(value) ;
-}
-}
-
-/*!
-* delete all objects that match the given vector of (typ_id, uuid) pairs.
-*/
-std::vector<std::tuple<eml_int64, int, oes::core::Guid> > SpaceWriter::delete_objects(
-    const std::vector<std::pair<int, oes::core::Guid> >& objects
-)
-{
-    const std::string tablename = std::string("temporary_") + oes::core::Guid::make().toStringNoDash() ;
-    std::vector<std::string> strings;
-    for (auto& object : objects) {
-        strings.push_back(
-            std::string("(") +
-            std::to_string(object.first) + // typ_id
-            std::string(",'") +
-            object.second.toXmlString() + // uuid
-            std::string("')")
-        );
-    }
-    std::string values = boost::algorithm::join(strings, ",");
-    std::string sql = fmt::format(delete_objects_, tablename, values, tablename, tablename, tablename, tablename, tablename, tablename, tablename, tablename);
-    auto sqlresult = db_->execute(std::move(sql));
-    auto numRows = PQntuples(sqlresult.get());
-
-    std::vector<std::tuple<eml_int64, int, oes::core::Guid> > result;
-    for( auto i = 0 ; i< numRows ; i++) {
-        const eml_int64 obj_id = postgresql_utils::getInt64(sqlresult, i, 0) ;
-        const int typ_id = postgresql_utils::getInt(sqlresult, i, 1) ;
-        const oes::core::Guid uid = postgresql_utils::getGuid(sqlresult, i, 2);
-
-        if (obj_id != -1) {
-            res_map_.erase(ResKey{ typ_id, uid });
-        }
-        result.emplace_back(std::make_tuple(obj_id, typ_id, uid));
-    }
-    sqlresult.reset();
-
-    return result;
 }
 
 /*!
@@ -3441,105 +3298,32 @@ void SpaceWriter::do_insert_rel(const ObjRef& ref, eml_int64 dst_id) {
 }
 
 /*!
- * Build a bulk upsert query for inserting \param size elements.
- */
-std::string build_bulk_rel_insert(int size) {
-    std::string sql_first = R"sql(INSERT INTO rel(obj_id, dst_id, xpa_id) VALUES ($1, $2, $3))sql";
-    std::string sql_last = R"sql(,(${}, ${}, ${}) ON CONFLICT(obj_id, dst_id, xpa_id) DO UPDATE SET cnt = rel.cnt + 1)sql";
-    //std::string sql_last = R"sql(,(${}, ${}, ${}) on conflict(obj_id, dst_id, xpa_id) do nothing)sql";
-    std::string sql_value = R"sql(,(${}, ${}, ${}))sql";
-    std::string sql ;
-    for(auto i=0 ; i<size ; i++) {
-        if( i==0) {
-            sql += sql_first ;
-            continue ;
-        }
-        if( i  == size-1 ) {
-            sql += fmt::format(sql_last, 3*i+1, 3*i+2, 3*i+3);
-            continue ;
-        }
-        sql += fmt::format(sql_value, 3*i+1, 3*i+2, 3*i+3);
-    }
-    return sql;
-}
-
-/*!
  * upsert relations in bulk groups.
- * \param relations the relations to insert.
+ * \param relations the relations to insert, duplicates included (each one adds 1 to rel.cnt).
  * \param bulk_size the number of elements to upsert in one query.
- *
- * Inserting in bulk allows to reduce the number of queries sent to the PostgreSQL server, greatly
- * improving the performances when a large number of elements need to be inserted. However increasing
- * the bulk size asymptotycally reaches a minimum very quickly, as expressed by those timings with 14000
- * relations:
- * - insert one by one: 35s
- * - bulk size 25: 1.8s
- * - bulk size 50: 1.5s
- * - bulk size 100: 1.3s
- * - bulk size 200: 1.2s
- * so the ideal bulk size is a tradeoff, high enough to get good performances, low enough to trigger
- * the mechanism as often as possible. Default is 50.
  */
 void SpaceWriter::do_bulk_insert_rels(const std::vector<RelToAdd>& relations, int bulk_size) {
-    const std::string sql = build_bulk_rel_insert(bulk_size);
-    Statement_opt stmt;
-    prepare(stmt, sql);
-    auto &bulk = *stmt;
-
-    // Prepared statement for single insert.
-    auto& single = *ins_rel_;
-
-    auto hash = [](const RelToAdd& r) { return r.obj_id + 1000 * r.dst_id + 1000000 * r.xpa_id; };
-    auto equal = [](const RelToAdd& r1, const RelToAdd& r2) { return r1.obj_id==r2.obj_id && r1.dst_id==r2.dst_id && r1.xpa_id==r2.xpa_id; };
-
-    // Number of bulk inserts to perform, and size of what is left to do.
-    size_t steps = relations.size() / bulk_size;
-    size_t left = relations.size() % bulk_size;
-    for(size_t i = 0; i< steps ; i++ ) {
-        const size_t start = i * bulk_size;
-
-        // Per PostgreSQL documentation: a bulk upsert is fine, as long as the same row is not updated twice.
-        // If that happens then a cardinality error is raised. So we make sure we do not have conflicting keys
-        // in the bulk set.
-        const std::vector<RelToAdd> sub_relations = {relations.begin() + start, relations.begin() + start + bulk_size};
-        const std::unordered_set<RelToAdd, decltype(hash), decltype(equal)>
-            unique_in_sub(sub_relations.begin(), sub_relations.end(), bulk_size/2, hash, equal);
-        if( sub_relations.size() == unique_in_sub.size()) {
-            // No dups in bulk group, insert in bulk.
-            for( int j=0 ; j<bulk_size ; j++ ) {
-                const size_t cur = (start + j);
-                bulk.bind(3 * j + 1, relations[cur].obj_id);
-                bulk.bind(3 * j + 2, relations[cur].dst_id);
-                bulk.bind(3 * j + 3, relations[cur].xpa_id);
-            }
-            bulk.execute();
-            bulk.reset();
-        } else {
-            // There are duplicates in the same bulk group, upsert one by one. In the worst case scenario
-            // we theoretically could have all of our bulk statements containing duplicates, which would
-            // defeat this optimization, but data consistency would still be maintained.Keeping the bulk
-            // statement size low enough makes this less likely, ensuring we hit the optimized case more often.
-            for( int j=0 ; j<bulk_size ; j++ ) {
-                const size_t cur = (start + j);
-                single.bind(1, relations[cur].obj_id);
-                single.bind(2, relations[cur].dst_id);
-                single.bind(3, relations[cur].xpa_id);
-                single.execute();
-                single.reset();
-            }
-        }
+    std::vector<eml_int64> obj_ids;
+    std::vector<eml_int64> dst_ids;
+    std::vector<eml_int64> xpa_ids;
+    obj_ids.reserve(relations.size());
+    dst_ids.reserve(relations.size());
+    xpa_ids.reserve(relations.size());
+    for (const RelToAdd& r : relations) {
+        obj_ids.push_back(r.obj_id);
+        dst_ids.push_back(r.dst_id);
+        xpa_ids.push_back(r.xpa_id);
     }
 
-    // Deal with what is left, again one by one. We could use a smaller bulk statement here as well, but
-    // this will not buy us much if we keep the bulk statement size low enough.
-    const size_t start = steps * bulk_size;
-    for( size_t j=0 ; j<left ; j++ ) {
-        const size_t cur = (start + j);
-        single.bind(1, relations[cur].obj_id);
-        single.bind(2, relations[cur].dst_id);
-        single.bind(3, relations[cur].xpa_id);
-        single.execute();
-        single.reset();
+    auto& stmt = *bulk_ins_rel_;
+    const size_t chunk = static_cast<size_t>(std::max(bulk_size, 1));
+    for (size_t start = 0; start < relations.size(); start += chunk) {
+        const size_t end = std::min(start + chunk, relations.size());
+        stmt.bind<eml_int64>(1, obj_ids.cbegin() + start, obj_ids.cbegin() + end);
+        stmt.bind<eml_int64>(2, dst_ids.cbegin() + start, dst_ids.cbegin() + end);
+        stmt.bind<eml_int64>(3, xpa_ids.cbegin() + start, xpa_ids.cbegin() + end);
+        stmt.execute();
+        stmt.reset();
     }
 }
 
@@ -4794,65 +4578,69 @@ std::vector<int64_t> SpaceWriter::insert_references(const std::vector<ResourceRe
     return ids;
 }
 
-std::vector<int64_t> SpaceWriter::insert_relations( const std::vector<ReferenceRel>& relations )
+void SpaceWriter::insert_relations( const std::vector<ReferenceRel>& relations, size_t bulk_size )
 {
-    if(!ins_rels_xpa_){
-        prepare(ins_rels_xpa_,
-            R"sql(
-            INSERT INTO xpa(th)
-            VALUES ($1)
-            ON CONFLICT DO NOTHING;
-            )sql"
-        );
+    std::vector<std::string> xpaths;
+    std::vector<int> xpath_indexes;
+    xpaths.reserve(relations.size());
+    xpath_indexes.reserve(relations.size());
+    for (size_t i = 0; i < relations.size(); ++i) {
+        xpaths.push_back(relations[i].xpath);
+        xpath_indexes.push_back(static_cast<int>(i));
     }
-    auto& stmt_xpa = *ins_rels_xpa_;
-    for(auto& rel:relations){
-        stmt_xpa.bind(1, rel.xpath);
-        stmt_xpa.step();
-        stmt_xpa.reset();
-    }
+    const auto xpa_info = xpa_of(xpaths, xpath_indexes, bulk_size);
 
     if(!ins_rels_from_uid_){
+        // The source cnt is copied as is; a relation already there is left alone
         prepare(ins_rels_from_uid_,
             R"sql(
             INSERT INTO rel(obj_id, dst_id, xpa_id, cnt)
-            VALUES (
-                (SELECT res.obj_id FROM res
-                   JOIN typ ON typ.id = res.typ_id
-                   JOIN uri ON uri.id = typ.uri_id
-                  WHERE res.guid=$1 AND res.version=$2
-                    AND uri.ml || '.' || typ.xml = $3),
-                (SELECT res.obj_id FROM res
-                   JOIN typ ON typ.id = res.typ_id
-                   JOIN uri ON uri.id = typ.uri_id
-                  WHERE res.guid=$4 AND res.version=$5
-                    AND uri.ml || '.' || typ.xml = $6),
-                (SELECT id FROM xpa WHERE th=$7), $8
-            ) 
+            SELECT s.obj_id, d.obj_id, r.xpa_id, r.cnt
+              FROM UNNEST($1::text[], $2::uuid[], $3::text[], $4::text[], $5::uuid[], $6::text[],
+                          $7::bigint[], $8::int[])
+                   AS r(src_type, src_guid, src_version, dst_type, dst_guid, dst_version, xpa_id, cnt)
+              JOIN typ ts ON true
+              JOIN uri us ON us.id = ts.uri_id AND us.ml || '.' || ts.xml = r.src_type
+              JOIN res s  ON s.typ_id = ts.id AND s.guid = r.src_guid AND s.version = r.src_version
+              JOIN typ td ON true
+              JOIN uri ud ON ud.id = td.uri_id AND ud.ml || '.' || td.xml = r.dst_type
+              JOIN res d  ON d.typ_id = td.id AND d.guid = r.dst_guid AND d.version = r.dst_version
             ON CONFLICT DO NOTHING
-            RETURNING id;
             )sql"
         );
     }
 
-    auto& stmt = *ins_rels_from_uid_;
+    std::vector<std::string> src_types, src_versions, dst_types, dst_versions;
+    std::vector<oes::core::Guid> src_guids, dst_guids;
+    std::vector<eml_int64> xpa_ids;
+    std::vector<int> cnts;
+    for (size_t i = 0; i < relations.size(); ++i) {
+        const ReferenceRel& rel = relations[i];
+        src_types.push_back(rel.src_type);
+        src_guids.push_back(rel.src_guid);
+        src_versions.push_back(rel.src_version);
+        dst_types.push_back(rel.dst_type);
+        dst_guids.push_back(rel.dst_guid);
+        dst_versions.push_back(rel.dst_version);
+        xpa_ids.push_back(xpa_info.at(static_cast<int>(i)));
+        cnts.push_back(rel.cnt);
+    }
 
-    std::vector<int64_t> ids;
-    for(auto& rel:relations){
-        int bind_idx = 0;
-        stmt.bind(++bind_idx, rel.src_guid);
-        stmt.bind(++bind_idx, rel.src_version);
-        stmt.bind(++bind_idx, rel.src_type);
-        stmt.bind(++bind_idx, rel.dst_guid);
-        stmt.bind(++bind_idx, rel.dst_version);
-        stmt.bind(++bind_idx, rel.dst_type);
-        stmt.bind(++bind_idx, rel.xpath);
-        stmt.bind(++bind_idx, rel.cnt);
-        stmt.step();
-        ids.push_back(stmt.getInt64(0));
+    auto& stmt = *ins_rels_from_uid_;
+    const size_t chunk = std::max<size_t>(bulk_size, 1);
+    for (size_t start = 0; start < relations.size(); start += chunk) {
+        const size_t end = std::min(start + chunk, relations.size());
+        stmt.bindTextArray(1, src_types.cbegin() + start, src_types.cbegin() + end);
+        stmt.bind<oes::core::Guid>(2, src_guids.cbegin() + start, src_guids.cbegin() + end);
+        stmt.bindTextArray(3, src_versions.cbegin() + start, src_versions.cbegin() + end);
+        stmt.bindTextArray(4, dst_types.cbegin() + start, dst_types.cbegin() + end);
+        stmt.bind<oes::core::Guid>(5, dst_guids.cbegin() + start, dst_guids.cbegin() + end);
+        stmt.bindTextArray(6, dst_versions.cbegin() + start, dst_versions.cbegin() + end);
+        stmt.bind<eml_int64>(7, xpa_ids.cbegin() + start, xpa_ids.cbegin() + end);
+        stmt.bind<int>(8, cnts.cbegin() + start, cnts.cbegin() + end);
+        stmt.execute();
         stmt.reset();
     }
-    return ids;
 }
 
 /*!

@@ -110,7 +110,17 @@ namespace oes::testing::osdu
 
     bool StorageStub::getEntitiesList(HttpContext& httpContext)
     {
-        const auto jsonRoot = nlohmann::json(storageRecords_);
+        // Single page, no limit check: the cursor is always null
+        const auto kindIt = httpContext.request.queryArgs.find("kind");
+        nlohmann::json results = nlohmann::json::array();
+        for (const auto& storageRecord : storageRecords_)
+        {
+            if (kindIt == httpContext.request.queryArgs.cend() || kindIt->second == storageRecord.kind)
+            {
+                results.push_back(storageRecord);
+            }
+        }
+        const nlohmann::json jsonRoot = {{"cursor", nullptr}, {"results", std::move(results)}};
         httpContext.response.body = jsonRoot.dump(4);
         httpContext.response.statusCode = 200;
         return true;
