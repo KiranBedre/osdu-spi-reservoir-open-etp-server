@@ -796,7 +796,7 @@ BOOST_AUTO_TEST_CASE(test_new_space) {
         "        locked: false",
         "           nil: <NULL>",
         "     read-only: false",
-        "          size: 232 kB"
+        "          size: 256 kB"
     }));
     runner.startAndWait({
         "space", "--delete", "-s", "foo/bar",

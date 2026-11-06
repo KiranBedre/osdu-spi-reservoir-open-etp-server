@@ -17,6 +17,7 @@
 #include <iostream>
 #include <sstream>
 #include <limits>
+#include <stdexcept>
 
 #include <oes/core/utils/config_enter_3rdparty.h>
 #include <fmt/format.h>
@@ -25,6 +26,7 @@
 #include "SpaceDDL.h"
 
 #include <oes/postgresql/Connection.h>
+#include <oes/postgresql/PhysicalName.h>
 #include <oes/postgresql/Statement.h>
 
 #include <oes/core/utils/Assert.h>
@@ -59,6 +61,46 @@ CREATE OR REPLACE VIEW "{0}".resources AS
     return fmt::format(sql, schema);
 }
 
+// Removes admin.space_rel rows no res row uses any more: once per DELETE, per row when space_rel_id changes.
+// admin.update_space_rels() disables res_space_rel_trigger by name. \p schema is the bare (unquoted) name.
+std::string space_rel_triggers_ddl(const std::string& schema) {
+    const char* sql = R"sql(
+CREATE OR REPLACE FUNCTION "{0}".remove_space_rels_if_no_res() RETURNS TRIGGER AS $$
+BEGIN
+    EXECUTE format(
+        'DELETE FROM admin.space_rel AS s
+          WHERE s.id IN (SELECT space_rel_id FROM old_rows WHERE space_rel_id IS NOT NULL)
+            AND NOT EXISTS (SELECT 1 FROM %I.res AS r WHERE r.space_rel_id = s.id)',
+        TG_TABLE_SCHEMA);
+    RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER res_space_rel_del_trigger
+AFTER DELETE ON "{0}".res
+REFERENCING OLD TABLE AS old_rows
+FOR EACH STATEMENT
+EXECUTE PROCEDURE "{0}".remove_space_rels_if_no_res();
+
+CREATE TRIGGER res_space_rel_trigger
+AFTER UPDATE OF space_rel_id ON "{0}".res
+FOR EACH ROW
+WHEN (OLD.space_rel_id IS NOT NULL AND OLD.space_rel_id IS DISTINCT FROM NEW.space_rel_id)
+EXECUTE PROCEDURE "{0}".remove_space_rel_if_no_res();
+)sql";
+    return fmt::format(sql, schema);
+}
+
+// sel_ary_ids_ and the cascade from obj; res_null_guid_idx only holds rows nulled until their commit.
+// \p schema is the bare (unquoted) name.
+std::string lookup_indexes_ddl(const std::string& schema) {
+    const char* sql = R"sql(
+CREATE INDEX ary_obj_id_idx ON "{0}".ary (obj_id);
+CREATE INDEX res_null_guid_idx ON "{0}".res (obj_id) WHERE guid IS NULL;
+)sql";
+    return fmt::format(sql, schema);
+}
+
 } // namespace
 
 //============================================================================
@@ -83,6 +125,7 @@ const std::vector<SchemaVersionInfo>& space_schema_versions(int& magic_cookie) {
         {15, "2024-10-27", "RCo", "Add readable relations view."},
         {16, "2026-09-18", "RCo", "Key arrays on their container (ary.epc_guid) and path."},
         {17, "2026-10-12", "RCo", "Repair array containers of EML 2.3 objects left nil by version 16."},
+        {18, "2026-10-22", "RCo", "Clean up admin.space_rel once per DELETE on res; index bin.id, ary.obj_id and nulled res rows."},
     };
 
     // 4c 74 4b 56 = "LtKV" (OpenKV w/o voyels)
@@ -152,6 +195,7 @@ void new_eml_db_prolog(const oes::postgresql::Connection_ptr& db, bool bulk_impo
         stmt.reset();
     }
     const std::string resources_ddl = resources_view_ddl(schema);
+    const std::string space_rel_ddl = space_rel_triggers_ddl(schema);
 
     const std::vector<const char*> ddls{
         // TRANSACTION is removed since we can only have one transaction per connection in PostgreSQL
@@ -249,13 +293,8 @@ BEGIN
     RETURN OLD;
 END;
 $$ LANGUAGE plpgsql;
-
--- add a trigger that invoke remove_space_rel_if_no_res when a row of res is edited or deleted
-CREATE TRIGGER res_space_rel_trigger
-AFTER DELETE OR UPDATE OF space_rel_id ON res
-FOR EACH ROW
-EXECUTE PROCEDURE remove_space_rel_if_no_res();
         )sql",
+        space_rel_ddl.c_str(),
         R"sql(
 CREATE TABLE rel
 ( id SERIAL
@@ -299,7 +338,7 @@ CREATE TABLE ary
         )sql",
         R"sql(
 CREATE TABLE bin
-( id BIGSERIAL
+( id BIGSERIAL PRIMARY KEY
 , ary_id BIGINT NOT NULL REFERENCES ary(id) ON DELETE CASCADE
 , idx INT NOT NULL CHECK (idx >= 0)
 , value BYTEA
@@ -395,6 +434,7 @@ void new_eml_db_epilog(const oes::postgresql::Connection_ptr& db, bool vacuum, b
     // in the Discovery.GetResources protocol. Finding eTargets uses the PK.
     // TODO: Move all UNIQUE indexes here too. See DRH post link above too.
     db->execute("CREATE INDEX rel_by_dst ON rel(dst_id)");
+    db->execute(lookup_indexes_ddl(db->executeString("SELECT current_schema()")));
     if (analyze) {
         db->execute("ANALYZE");
     }
@@ -496,6 +536,106 @@ void add_relations_view(const Connection_ptr& conn, const std::string &schema) {
 // Unlike the other helpers here, \p schema is the bare (unquoted) name.
 void update_resources_view(const Connection_ptr& conn, const std::string &schema) {
     conn->execute(resources_view_ddl(schema));
+}
+
+// Version 18: the row-level trigger of 13 cleaned up admin.space_rel once per deleted res row.
+// \p schema is the bare (unquoted) name.
+void update_space_rel_triggers(const Connection_ptr& conn, const std::string &schema) {
+    conn->execute(
+        fmt::format("DROP TRIGGER IF EXISTS res_space_rel_trigger ON \"{}\".res;", schema)
+        + space_rel_triggers_ddl(schema)
+    );
+}
+
+// Version 18: bin.id from its sequence is already unique and non-null. \p schema is the bare (unquoted) name.
+void add_lookup_indexes(const Connection_ptr& conn, const std::string &schema) {
+    conn->execute(
+        fmt::format("ALTER TABLE \"{}\".bin ADD PRIMARY KEY (id);", schema)
+        + lookup_indexes_ddl(schema)
+    );
+}
+
+//============================================================================
+
+// Each step undoes its up-step exactly, so the following upgrade recreates the same objects
+void downgrade_empty_space(const Connection_ptr& conn, const std::string& dbfile, int from_version, int to_version) {
+    int magic_cookie = 0;
+    const int latest = space_schema_versions(magic_cookie).back().version;
+    if (to_version > from_version || from_version > latest) {
+        throw std::runtime_error(fmt::format(
+            "Cannot take a space from schema {} down to {}", from_version, to_version
+        ));
+    }
+    const oes::postgresql::relational::PhysicalName phys(dbfile, oes::postgresql::relational::IMPLICIT_LOWERCASE);
+    const std::string schema = phys.quotedName();
+    if (conn->executeInt64(fmt::format("SELECT count(*) FROM (SELECT 1 FROM {}.res LIMIT 1) AS r", schema)) > 0) {
+        throw std::runtime_error("Cannot take a space holding resources to an older schema");
+    }
+
+    // 18 -> 17: the row-level trigger, for DELETE as well, and no lookup indexes
+    if (from_version >= 18 && to_version < 18) {
+        conn->execute(fmt::format(R"sql(
+DROP TRIGGER res_space_rel_del_trigger ON {0}.res;
+DROP FUNCTION {0}.remove_space_rels_if_no_res();
+DROP TRIGGER res_space_rel_trigger ON {0}.res;
+CREATE TRIGGER res_space_rel_trigger
+AFTER DELETE OR UPDATE OF space_rel_id ON {0}.res
+FOR EACH ROW
+EXECUTE PROCEDURE {0}.remove_space_rel_if_no_res();
+DROP INDEX {0}.res_null_guid_idx;
+DROP INDEX {0}.ary_obj_id_idx;
+ALTER TABLE {0}.bin DROP CONSTRAINT bin_pkey;
+)sql", schema));
+    }
+
+    // 17 -> 16: data only, nothing to undo
+
+    // 16 -> 15: the path-only key. The resources view of 16 reads ary only through admin.array_summary(),
+    // and the 16 up-step replaces it anyway
+    if (from_version >= 16 && to_version < 16) {
+        conn->execute(fmt::format(R"sql(
+-- Also drops ary_epc_guid_path_key, as any constraint involving the column
+ALTER TABLE {0}.ary DROP COLUMN epc_guid;
+ALTER TABLE {0}.ary ADD CONSTRAINT ary_path_key UNIQUE (path);
+)sql", schema));
+    }
+
+    conn->execute(fmt::format("COMMENT ON SCHEMA {} IS '{}:{}'", schema, magic_cookie, to_version));
+}
+
+std::vector<std::string> columns_added_after(const std::string& table, int to_version) {
+    std::vector<std::string> columns;
+    if (to_version < 16 && table == "ary") {
+        columns.emplace_back("epc_guid");
+    }
+    return columns;
+}
+
+void check_space_projection(const Connection_ptr& conn, const std::string& dbfile, int from_version, int to_version) {
+    int magic_cookie = 0;
+    const int latest = space_schema_versions(magic_cookie).back().version;
+    if (to_version > from_version || from_version > latest) {
+        throw std::runtime_error(fmt::format(
+            "Cannot project a space from schema {} down to {}", from_version, to_version
+        ));
+    }
+    const oes::postgresql::relational::PhysicalName phys(dbfile, oes::postgresql::relational::IMPLICIT_LOWERCASE);
+
+    // 18 -> 17: triggers and indexes only
+
+    // 17 -> 16: the repaired containers stay valid at 16
+
+    // 16 -> 15: one container per path
+    if (from_version >= 16 && to_version < 16) {
+        const std::string path = conn->executeString(fmt::format(
+            "SELECT (SELECT path FROM {}.ary GROUP BY path HAVING count(*) > 1 LIMIT 1)", phys.quotedName()
+        ));
+        if (!path.empty()) {
+            throw std::runtime_error(fmt::format(
+                "Schema {} holds one array per path, the path {} is in several containers", to_version, path
+            ));
+        }
+    }
 }
 
 //============================================================================

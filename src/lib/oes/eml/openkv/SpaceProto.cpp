@@ -118,8 +118,9 @@ void OpenKVDataspace::GetDataspaces(
     std::shared_ptr<std::vector<bool>> read_authorizations (nullptr);
     std::shared_ptr<std::vector<bool>> write_authorizations (nullptr);
     const auto auth_simple_mode = (session->entitlement_ && session->entitlement_->config().osdu_->authorizationMode() == "simple");
+    const bool auth_groups_bulk = (session->entitlement_ && session->entitlement_->isGroupBased());
     
-    if (auth_simple_mode) {
+    if (auth_simple_mode || auth_groups_bulk) {
         ErrorInfo err;
         read_authorizations = std::make_shared<std::vector<bool>>(std::move(checkDataspacesAccess(spaces, AccessType::CAN_READ, err)));
         if(err.m_code != ErrorCodes::IS_OK) {
@@ -137,7 +138,7 @@ void OpenKVDataspace::GetDataspaces(
         // Authorization (2 from 2)
         
         // Dataspace filtered-out since user has no access
-        if (auth_simple_mode && read_authorizations) {
+        if ((auth_simple_mode || auth_groups_bulk) && read_authorizations) {
             // We check in the authorization vector (we have already checked the read auth for every dataspace)
             if (!read_authorizations->at(i)) {
                 continue;
@@ -184,7 +185,7 @@ void OpenKVDataspace::GetDataspaces(
         // Set it if actually read-only.
         // Makes xdata roundtrip testing easier.
         bool can_write = false ;
-        if (auth_simple_mode && write_authorizations) {
+        if ((auth_simple_mode || auth_groups_bulk) && write_authorizations) {
             can_write = write_authorizations->at(i) ;
         } else {
             // Check for write authorization
@@ -496,6 +497,11 @@ void OpenKVDataspace::PutDataspaces(
                     addErrorStatus(rc, cid, err);
                     continue;
 
+                }
+                // The clone is labelled with the latest version below, so its source must be at it
+                if (!repo_->getSpaceConnection(origin, err)) {
+                    addErrorStatus(rc, cid, err);
+                    continue;
                 }
                 
                 copied = true;

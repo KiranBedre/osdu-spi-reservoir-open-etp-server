@@ -1527,6 +1527,31 @@ BOOST_AUTO_TEST_CASE(test_DataArray9_PutDataArrays_missing_container_no_tx) {
     BOOST_CHECK_EQUAL(1u, aryCount(space));
 }
 
+// A resource with the guid that is not an external part is not a container
+BOOST_AUTO_TEST_CASE(test_DataArray9_PutDataArrays_container_not_ext_part_no_tx) {
+    const auto space = putSpace();
+    const std::string dataspace = EmlUri::parse(space.m_uri).dataspace_;
+
+    const auto& crs = oes::testing::eml::crs_mock();
+    putMockObj(space, crs);
+    const auto& mock_hdf = oes::testing::eml::epc_ext_mock();
+    const EmlUri not_ext = EmlUri::make_obj(dataspace, mock_hdf.type_, crs.guid_, EmlUri::eEML20);
+
+    data12::DataArrayTypes::PutDataArraysType ary;
+    ary.m_uid.m_uri = not_ext.to_string();
+    ary.m_uid.m_pathInResource = "crs/1";
+    ary.m_array.m_dimensions = { 3 };
+    ArrayOfDouble values;
+    values.m_values.assign(3, 1.0);
+    ary.m_array.m_data.m_item = std::move(values);
+
+    auto put_rpc = makeRpc(&OpenKVDataArray::PutDataArrays);
+    put_rpc.req_.m_dataArrays.emplace("ary#1", ary);
+    put_rpc.call();
+    BOOST_CHECK(hasError(put_rpc.rc_));
+    BOOST_CHECK_EQUAL(0u, aryCount(space));
+}
+
 data12::DataArrayTypes::PutUninitializedDataArrayType make_uninit_ary(
     const EmlUri& container, const std::string& path
 ) {

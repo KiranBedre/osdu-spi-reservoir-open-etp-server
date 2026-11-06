@@ -52,6 +52,7 @@
 
 #include <oes/postgresql/Transaction.h>
 #include <oes/postgresql/Format.hpp>
+#include <oes/postgresql/PhysicalName.h>
 
 
 using namespace oes::eml::etp12::Datatypes;
@@ -575,6 +576,7 @@ void OpenKVDataspaceOSDU::CopyToDataspace( // messageTypeId 7
         if(!rel_id){
             rel_id = repo_->getAdminDb()->createSpaceReference(target_space,space);
         }
+        std::vector<TypedUid> new_uids;
         for (const Entry* nk : nks) {
             reply.addMapPart(nk->first, "true");
             // Look if the info is already in the map
@@ -594,11 +596,12 @@ void OpenKVDataspaceOSDU::CopyToDataspace( // messageTypeId 7
                     }
                     all_refs.push_back(ref);
                     all_ids.insert(ref_uid);
+                    new_uids.push_back(ref_uid);
                 }
-                std::vector<ReferenceRel> rels = reader.get_relations(ref_uid);
-                all_rels.insert(all_rels.end(), rels.begin(), rels.end());
             }
         }
+        std::vector<ReferenceRel> rels = reader.get_relations(new_uids, session->pg_bulk_size_);
+        all_rels.insert(all_rels.end(), rels.begin(), rels.end());
     }
 
     Connection_ptr dest_space_db = repo_->getSpaceConnection(target_space, w_err);
@@ -610,7 +613,7 @@ void OpenKVDataspaceOSDU::CopyToDataspace( // messageTypeId 7
 
     SpaceWriter writer(dest_space_db);
     std::vector<int64_t> ids = writer.insert_references(all_refs);
-    writer.insert_relations(all_rels);
+    writer.insert_relations(all_rels, session->pg_bulk_size_);
 
     repo_->updateSpaceInfo(target_space);
     
@@ -677,6 +680,17 @@ void OpenKVDataspaceOSDU::CopyDataspaceFromRemote_trigger(
         return reply.fatalError(EAUTHORIZATION_REQUIRED, err.m_message);
     }
 
+    // A new target space is at its binary's latest version, and the copy keeps the source ids
+    const Connection_ptr target_conn = repo_->getSpaceConnection(target_space, err);
+    if (!target_conn) {
+        return reply.fatalError(EINVALID_STATE, err.m_message);
+    }
+    const oes::postgresql::relational::PhysicalName target_phys(target_space.dbfile_, oes::postgresql::relational::IMPLICIT_LOWERCASE);
+    if (target_conn->executeInt64(fmt::format("SELECT count(*) FROM (SELECT 1 FROM {}.res LIMIT 1) AS r", target_phys.quotedName())) > 0) {
+        return reply.fatalError(EINVALID_STATE, fmt::format("Target dataspace {} is not empty", target_space.path_));
+    }
+    const std::string target_version = spaceSchemaVersion(target_conn, target_space.dbfile_);
+
     // New client to connect to source server
     oes::client::ClientConfig cfg;
     cfg.server_url_ = req.m_sourceServer.m_sourceServer;
@@ -684,7 +698,8 @@ void OpenKVDataspaceOSDU::CopyDataspaceFromRemote_trigger(
     cfg.data_partition_id_hdr_ = req.m_sourceServer.m_sourcePartition;
     cfg.max_mgs_size_ = session->negotiated_max_msg_size();
     cfg.requested_protocols_.assign({
-        oes::client::data12::Protocol::eDataspaceOSDU
+        oes::client::data12::Protocol::eDataspaceOSDU,
+        oes::client::data12::Protocol::eSupportedTypes
     });
 
     auto timeout = std::chrono::milliseconds(10000);
@@ -706,9 +721,25 @@ void OpenKVDataspaceOSDU::CopyDataspaceFromRemote_trigger(
         return reply.fatalError(EINVALID_ARGUMENT, "Can not get space_osdu_proto");
     }
 
+    // A server before the version exchange dumps a space as it finds it: opening it first upgrades it to 15
+    auto* types_proto = client->types_proto();
+    if (!types_proto) {
+        return reply.fatalError(EINVALID_ARGUMENT, "The source server does not support protocol 25 (SupportedTypes)");
+    }
+    auto types_rpc = oes::client::rpcFor(types_proto, &oes::client::proto12::ISupportedTypes::GetSupportedTypes);
+    types_rpc.req_.m_uri = EmlUri::make_space(req.m_sourceServer.m_sourceDataspacePath).to_string();
+    types_rpc.req_.m_scope = oes::client::data12::Object::ContextScopeKind::eSelf;
+    types_rpc.req_.m_countObjects = false;
+    types_rpc.req_.m_returnEmptyTypes = false;
+    std::ostringstream types_err;
+    if (!types_rpc.callForEachValue(types_err, timeout, [](auto&) {})) {
+        return reply.fatalError(EINVALID_ARGUMENT, "Cannot open the source dataspace: " + types_err.str());
+    }
+
     auto rpc = oes::client::rpcFor(proto, &oes::client::proto12::IDataspaceOSDU::CopyDataspaceFromRemote);
     rpc.req_.m_dataspacePath = req.m_sourceServer.m_sourceDataspacePath;
     rpc.req_.m_action = "dump";
+    rpc.req_.m_extraData["schema_version"] = target_version;
 
     // start local transaction
     std::vector<EmlUri> txSpaceUris;
@@ -736,7 +767,7 @@ void OpenKVDataspaceOSDU::CopyDataspaceFromRemote_trigger(
     // The incoming stream overwrites the target xdata with the source one
     const oes::eml::etp12::XDataMap target_xdata = target_space.xdataAsMap();
 
-    PGConsumer pg_consumer(target_space, repo_->getDbConnection());
+    PGConsumer pg_consumer(target_space, repo_->getDbConnection(), target_version);
     
     std::ostringstream oss_err;
     if (!rpc.callForEachValue(
@@ -748,7 +779,7 @@ void OpenKVDataspaceOSDU::CopyDataspaceFromRemote_trigger(
                 auto st = pg_consumer.consume(entry); //TODO cancel on failed
                 
                 if (st == SpaceStreamStatus::eFailed) {
-                    throw std::runtime_error("Dataspace stream failed");
+                    throw std::runtime_error("Dataspace stream failed: " + pg_consumer.error());
                 }
 
                 if (hasTableStreamStatus(entry.m_tableStatus, SpaceTableStreamStatus::eDone)) {
@@ -763,7 +794,14 @@ void OpenKVDataspaceOSDU::CopyDataspaceFromRemote_trigger(
             }
         })) {
         OES_ERROR("Error receiving table binary data");
-        return reply.fatalError(EINVALID_ARGUMENT, "Error receiving table binary data");
+        return reply.fatalError(EINVALID_ARGUMENT, "Error receiving table binary data: " + oss_err.str());
+    }
+    // A copy from an older source is at the source's version: upgrade it like any space
+    if (!repo_->getSpaceConnection(target_space, err)) {
+        return reply.fatalError(EINVALID_STATE, "Cannot upgrade the copy: " + err.m_message);
+    }
+    if (!pg_consumer.finish()) {
+        return reply.fatalError(EINVALID_STATE, pg_consumer.error());
     }
     local_tx.commit();
 
@@ -868,7 +906,45 @@ void OpenKVDataspaceOSDU::CopyDataspaceFromRemote_dump(
     if (max_msg_size < 1'000'000) {
         return reply.fatalError(EINVALID_ARGUMENT, "Max messagem size too small");
     }
-    PGStreamer pg_streamer(source_space, repo_->getDbConnection(), has_ref, session->negotiated_max_msg_size());
+
+    // Dump at the binary's latest version, never at whatever version the space was left
+    if (!repo_->getSpaceConnection(source_space, err)) {
+        return reply.fatalError(EINVALID_STATE, err.m_message);
+    }
+    const std::string source_version = spaceSchemaVersion(repo_->getDbConnection(), source_space.dbfile_);
+
+    // A target that sends no version is a server before the version exchange, i.e. at 15
+    const auto requested = req.m_extraData.find("schema_version");
+    const bool exchange = requested != req.m_extraData.end();
+    int magic_cookie = 0;
+    space_schema_versions(magic_cookie);
+    const std::string target_version = exchange ? requested->second : fmt::format("{}:15", magic_cookie);
+    // A newer target takes its empty space down to the source's version; an older one gets the space projected to its own
+    const int target_number = schemaVersionNumber(target_version);
+    const int source_number = schemaVersionNumber(source_version);
+    if (target_number < 0) {
+        return reply.fatalError(EINVALID_STATE, fmt::format(
+            "Source dataspace {}: the target sent an unknown schema version {}", source_space.path_, target_version
+        ));
+    }
+    const bool project = source_number > target_number;
+    if (project) {
+        try {
+            check_space_projection(repo_->getDbConnection(), source_space.dbfile_, source_number, target_number);
+        } catch (const std::exception& e) {
+            return reply.fatalError(EINVALID_STATE, fmt::format(
+                "Source dataspace {} at schema {} cannot be copied to a target at {}{}: {}",
+                source_space.path_, source_number, target_number,
+                exchange ? "" : " (the target sent no schema version)", e.what()
+            ));
+        }
+    }
+
+    PGStreamer pg_streamer(
+        source_space, repo_->getDbConnection(), has_ref, session->negotiated_max_msg_size(),
+        exchange ? (project ? target_version : source_version) : std::string(),
+        project ? target_number : 0
+    );
     
     SpaceStreamStatus status = SpaceStreamStatus::eOngoing;
     while ( status == SpaceStreamStatus::eOngoing) {

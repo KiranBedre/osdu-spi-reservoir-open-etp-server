@@ -162,6 +162,14 @@ const EmlObjMock& traj_mock();      // resqml2:WellboreTrajectoryRepresentation
 OES_TESTING_EML_EXPORT
 EmlObjMock prop22_mock(const oes::core::Guid& uid);
 
+//! Copy of a mock without arrays, under another guid
+OES_TESTING_EML_EXPORT
+EmlObjMock with_guid(const EmlObjMock& mock, const oes::core::Guid& uid);
+
+//! New MdDatum whose LocalCrs reference is repeated ref_count times, over the CRSs in turn
+OES_TESTING_EML_EXPORT
+EmlObjMock datum_referencing(const std::vector<oes::core::Guid>& crs_guids, size_t ref_count);
+
 //============================================================================
 
 } // namespace oes::testing::eml
