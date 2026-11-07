@@ -22,6 +22,7 @@ h5_result_dataset=""
 log_filename=""
 oes_exe=""
 oes_pid=""
+source_pid=""
 function cleanup {
   echo -e "${LightCyan}Cleaning test environment${NC}"
   if [ "${dataspace_options}" != ""  ]; then
@@ -30,7 +31,10 @@ function cleanup {
   if [ ${oes_pid} ]; then
     kill ${oes_pid}
   fi
-  rm -f  ${h5_result_dataset} ${epc_result_dataset} ${log_filename}
+  if [ ${source_pid} ]; then
+    kill ${source_pid}
+  fi
+  rm -f  ${h5_result_dataset} ${epc_result_dataset} ${log_filename} E2E_source_server.log
   rm -rf results
 }
 trap cleanup EXIT
@@ -147,6 +151,16 @@ function run_expected_error_test {
             echo -e "\t${Green}OK (`expr $end - $start`s)${NC}"
         fi
 }
+function check_true { # description, then a command that must succeed
+    local description=$1
+    shift
+    if "$@"; then
+        echo -e "\t${Green}OK: ${description}${NC}"
+    else
+        echo -e "\t${Red}FAILED: ${description}${NC}"
+        exit 1
+    fi
+}
 
 
 echo -e "${LightCyan}-------------------------------------------------------------------------${NC}"
@@ -209,6 +223,41 @@ run_test ./${oes_exe} space ${dataspace_options} --export-epc ${epc_result_datas
 run_test ./${oes_exe} space ${dataspace_options} --delete
 run_expected_error_test ./${oes_exe} space ${dataspace_options} --delete
 dataspace_options=""
+
+echo -e "${LightCyan}-------------------------------------------------------------------------${NC}"
+echo -e "${LightCyan}ETP dataspace copy from a remote server${NC}"
+# The dump comes from a second server: a single-threaded server cannot serve the dump it requests
+source_port=9004
+if [ ${BUILD_TYPE} == "Debug" ]; then
+  source_port=9005
+fi
+./${oes_exe} server --authN none --port ${source_port} -M 2GB --log_level=warning --start > E2E_source_server.log 2>&1 &
+source_pid=$!
+sleep 5
+copy_epc=../../data/Volve_Demo_Faults_Depth.epc
+copy_source="${server_con} --log_level=warning -s E2E/CopySource_${BUILD_TYPE}"
+copy_target="${server_con} --log_level=warning -s E2E/CopyTarget_${BUILD_TYPE}"
+copy_options="--copy --from-remote --source-server ws://localhost:${source_port} --source-space E2E/CopySource_${BUILD_TYPE} --source-token none"
+run_test_no_check ./${oes_exe} space ${copy_source} --new --xdata '{"origin":"source","owner":"source"}'
+run_test_no_check ./${oes_exe} space ${copy_source} --import-epc ${copy_epc}
+run_test_no_check ./${oes_exe} space ${copy_target} --new --xdata '{"owner":"target","note":"kept"}'
+run_test_no_check ./${oes_exe} space ${copy_target} ${copy_options}
+source_total=$(./${oes_exe} space ${copy_source} --stats 2>&1 | grep TOTAL)
+target_total=$(./${oes_exe} space ${copy_target} --stats 2>&1 | grep TOTAL)
+check_true "same object count" test "${source_total}" == "${target_total}"
+# Both xdata merged, the target's entries winning
+target_info=$(./${oes_exe} space ${copy_target} --info 2>&1)
+check_true "target xdata kept" grep -q "note: kept" <<< "${target_info}"
+check_true "target xdata wins" grep -q "owner: target" <<< "${target_info}"
+check_true "source xdata merged" grep -q "origin: source" <<< "${target_info}"
+# Refused: the target is no longer empty
+run_expected_error_test ./${oes_exe} space ${copy_target} ${copy_options}
+# Putting the objects again draws new ids: the copy must have reset the sequences
+run_test_no_check ./${oes_exe} space ${copy_target} --import-epc ${copy_epc}
+run_test_no_check ./${oes_exe} space ${copy_target} --delete
+run_test_no_check ./${oes_exe} space ${copy_source} --delete
+kill ${source_pid}
+source_pid=""
 
 echo -e "${LightCyan}-------------------------------------------------------------------------${NC}"
 echo -e "${LightCyan}ETP hdf5 command tests${NC}"

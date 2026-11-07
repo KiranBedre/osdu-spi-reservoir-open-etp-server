@@ -749,6 +749,34 @@ EmlObjMock prop22_mock(const Guid& uid) {
     };
 }
 
+EmlObjMock with_guid(const EmlObjMock& mock, const Guid& uid) {
+    EmlObjMock copy = mock;
+    const std::string from = mock.guid_.toXmlString();
+    const std::string to = uid.toXmlString();
+    for (size_t pos = copy.xml_.find(from); pos != std::string::npos; pos = copy.xml_.find(from, pos + to.size())) {
+        copy.xml_.replace(pos, from.size(), to);
+    }
+    copy.guid_ = uid;
+    return copy;
+}
+
+EmlObjMock datum_referencing(const std::vector<Guid>& crs_guids, size_t ref_count) {
+    auto datum = with_guid(datum_mock(), Guid::make());
+    const std::string end_tag = "</resqml:LocalCrs>";
+    const size_t beg = datum.xml_.find("<resqml:LocalCrs ");
+    const size_t end = datum.xml_.find(end_tag, beg) + end_tag.size();
+    const std::string ref = datum.xml_.substr(beg, end - beg);
+    const std::string crs_uid = crs_mock().guid_.toXmlString();
+    std::string refs;
+    for (size_t i = 0; i < ref_count; ++i) {
+        std::string one = ref;
+        one.replace(one.find(crs_uid), crs_uid.size(), crs_guids[i % crs_guids.size()].toXmlString());
+        refs += one;
+    }
+    datum.xml_.replace(beg, end - beg, refs);
+    return datum;
+}
+
 //============================================================================
 
 } // namespace oes::testing::eml

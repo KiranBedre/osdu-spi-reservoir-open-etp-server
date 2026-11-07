@@ -1821,8 +1821,8 @@ bool space_export_epc(const EmlAppContext& ctx) {
     // (HDF5 write), the queue is in fact unlikely to get full, and the consumer side
     // will be "stalled" most of the time, waiting for new entries to be enqueued.
     const int max_queue_depth = ctx.args["array-queue-depth"].as<int>();
-    if (!(0 <= max_batch_size && max_batch_size <= 1000)) {
-        OES_ERROR("Invalid --array-queue-depth: Not in [0 - 1,000] range");
+    if (!(1 <= max_queue_depth && max_queue_depth <= 1000)) {
+        OES_ERROR("Invalid --array-queue-depth: Not in [1 - 1,000] range");
         return false;
     }
 

@@ -69,6 +69,7 @@ const std::vector<schema_version_info> schema_history__{
     { 9, "2023-11-17", "RCo",  "Fix copy of serials again" },
     { 10, "2026-09-18", "RCo", "Match resources by (type, guid) when importing a space" },
     { 11, "2026-09-21", "RCo", "Add the array_summary function used by the resources view" },
+    { 12, "2026-10-22", "RCo", "clone_schema copies whole trigger definitions" },
 };
 
 using oes::eml::openkv::Space;
@@ -474,13 +475,18 @@ bool OpenKVAdminDB::upgradeSchema(int start_version, int target_version)
             )sql");
         }
         if(start_version<9 && target_version>=4){ // Update clone function is required for version 4 and above
-            update_clone_schema_function(conn_);
+            add_clone_schema_function(conn_);
+            add_update_space_rels_function(conn_);
+            add_import_space_content_function(conn_);
         }
         if(start_version<10 && target_version>=10){
-            update_import_space_content_function(conn_);
+            update_import_space_content_function_10(conn_);
         }
         if(start_version<11 && target_version>=11){
-            update_array_summary_function(conn_);
+            update_array_summary_function_11(conn_);
+        }
+        if(start_version<12 && target_version>=12){
+            update_clone_schema_function_12(conn_);
         }
         conn_->execute(version_pragmas.c_str());
         tx.commit();
@@ -670,9 +676,10 @@ create or replace view admin.dataspaces as
     ro
     from admin.spaces ;
     )sql");
-    update_clone_schema_function(conn_);
-    update_import_space_content_function(conn_);
-    update_array_summary_function(conn_);
+    add_update_space_rels_function(conn_);
+    update_import_space_content_function_10(conn_);
+    update_array_summary_function_11(conn_);
+    update_clone_schema_function_12(conn_);
     } catch (const oes::postgresql::PostgreSQLException& ex) {
         OES_ERROR("Unable to create OpenKV functions and view: {}", ex.what());
         tx.rollback();
@@ -683,10 +690,10 @@ create or replace view admin.dataspaces as
 }
 
 /*!
- * Add the latest version of the array_summary function to the admin schema.
+ * Schema version 11: the array_summary function, in the admin schema.
  * It lives in admin so that the per-space resources view keeps resolving it once cloned.
 */
-void OpenKVAdminDB::update_array_summary_function(Connection_ptr conn) {
+void OpenKVAdminDB::update_array_summary_function_11(Connection_ptr conn) {
     conn->execute(R"sql(
 -- Summarize the arrays of a resource. A resource imported by reference
 -- keeps its arrays in the space it was imported from.
@@ -756,9 +763,9 @@ $func$ LANGUAGE plpgsql STABLE;
 }
 
 /*!
- * Add the latest version of the clone_schema function to the admin schema
+ * clone_schema as of admin version 9
 */
-void OpenKVAdminDB::update_clone_schema_function(Connection_ptr conn) {
+void OpenKVAdminDB::add_clone_schema_function(Connection_ptr conn) {
     conn->execute(R"sql(
 -- Clone an entire schema and its content
 CREATE OR REPLACE FUNCTION admin.clone_schema(source_schema text, dest_schema text) RETURNS void AS
@@ -876,7 +883,58 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql VOLATILE;
         )sql");
+}
 
+/*!
+ * update_space_rels as of admin version 9
+*/
+void OpenKVAdminDB::add_update_space_rels_function(Connection_ptr conn) {
+        //Create a new postgres function that updates the imported refs if a dataspace that was cloned contained any.
+        conn->execute(R"sql(
+CREATE OR REPLACE FUNCTION admin.update_space_rels(IN source_dataspace_uid text, IN dest_dataspace_uid text) RETURNS void  
+AS $$
+DECLARE
+  dest_schema TEXT;
+  original_rel_id BIGINT;
+  new_rel_id BIGINT;
+  source_space TEXT;
+  target_space TEXT;
+BEGIN
+    -- Get dest schema.
+    SELECT lower(dbfile) from admin.spaces WHERE uid = dest_dataspace_uid INTO dest_schema;
+
+    -- disable the trigger that would attempt to remove the relation.
+	EXECUTE 'ALTER TABLE ' || dest_schema ||'.res DISABLE TRIGGER res_space_rel_trigger' ;
+    -- Loop over the existing relations.
+    FOR original_rel_id in
+    EXECUTE 'SELECT DISTINCT space_rel_id FROM ' || dest_schema ||'.res WHERE space_rel_id IS NOT NULL'
+    LOOP
+        RAISE NOTICE 'Found relation % in %', original_rel_id, dest_schema;
+        SELECT source_sp, target_sp into source_space, target_space from admin.space_rel where id=original_rel_id;
+        RAISE NOTICE 'Relation: %, Source: %, Target: %', original_rel_id, source_space, target_space;
+        -- If source_space is source_dataspace_uid then replace it otherwise leave it as is.
+        IF source_space = source_dataspace_uid THEN
+            -- Add a relation between dest_dataspace_uid and the original target space.
+            INSERT INTO admin.space_rel(source_sp,target_sp) VALUES (dest_dataspace_uid, target_space) RETURNING id into new_rel_id;
+            RAISE NOTICE 'New relation id will be %', new_rel_id;
+            EXECUTE 'UPDATE ' || dest_schema ||'.res SET space_rel_id=' || new_rel_id || ' WHERE space_rel_id=' || original_rel_id ;
+        ELSE
+            -- Relation is with another dataspace so is still valid.
+            RAISE NOTICE 'Relation % left untouched.', original_rel_id;
+		END IF;
+    END LOOP;
+    -- re-enable the trigger.
+    EXECUTE 'ALTER TABLE ' || dest_schema ||'.res ENABLE TRIGGER res_space_rel_trigger' ;
+END;
+$$
+LANGUAGE plpgsql;
+        )sql");
+}
+
+/*!
+ * import_space_content as of admin version 9
+*/
+void OpenKVAdminDB::add_import_space_content_function(Connection_ptr conn) {
         //Create a new postgres function that copies the resources and associated tables from one space to another
         //The target space can be empty or not.
         conn->execute(R"sql(
@@ -981,46 +1039,127 @@ END;
 $$
 LANGUAGE plpgsql;
         )sql");
-        
-        //Create a new postgres function that updates the imported refs if a dataspace that was cloned contained any.
-        conn->execute(R"sql(
-CREATE OR REPLACE FUNCTION admin.update_space_rels(IN source_dataspace_uid text, IN dest_dataspace_uid text) RETURNS void  
-AS $$
-DECLARE
-  dest_schema TEXT;
-  original_rel_id BIGINT;
-  new_rel_id BIGINT;
-  source_space TEXT;
-  target_space TEXT;
-BEGIN
-    -- Get dest schema.
-    SELECT lower(dbfile) from admin.spaces WHERE uid = dest_dataspace_uid INTO dest_schema;
+}
 
-    -- disable the trigger that would attempt to remove the relation.
-	EXECUTE 'ALTER TABLE ' || dest_schema ||'.res DISABLE TRIGGER res_space_rel_trigger' ;
-    -- Loop over the existing relations.
-    FOR original_rel_id in
-    EXECUTE 'SELECT DISTINCT space_rel_id FROM ' || dest_schema ||'.res WHERE space_rel_id IS NOT NULL'
-    LOOP
-        RAISE NOTICE 'Found relation % in %', original_rel_id, dest_schema;
-        SELECT source_sp, target_sp into source_space, target_space from admin.space_rel where id=original_rel_id;
-        RAISE NOTICE 'Relation: %, Source: %, Target: %', original_rel_id, source_space, target_space;
-        -- If source_space is source_dataspace_uid then replace it otherwise leave it as is.
-        IF source_space = source_dataspace_uid THEN
-            -- Add a relation between dest_dataspace_uid and the original target space.
-            INSERT INTO admin.space_rel(source_sp,target_sp) VALUES (dest_dataspace_uid, target_space) RETURNING id into new_rel_id;
-            RAISE NOTICE 'New relation id will be %', new_rel_id;
-            EXECUTE 'UPDATE ' || dest_schema ||'.res SET space_rel_id=' || new_rel_id || ' WHERE space_rel_id=' || original_rel_id ;
-        ELSE
-            -- Relation is with another dataspace so is still valid.
-            RAISE NOTICE 'Relation % left untouched.', original_rel_id;
-		END IF;
-    END LOOP;
-    -- re-enable the trigger.
-    EXECUTE 'ALTER TABLE ' || dest_schema ||'.res ENABLE TRIGGER res_space_rel_trigger' ;
-END;
+/*!
+ * Schema version 12 of clone_schema: triggers are copied whole, with pg_get_triggerdef()
+*/
+void OpenKVAdminDB::update_clone_schema_function_12(Connection_ptr conn) {
+    conn->execute(R"sql(
+-- Clone an entire schema and its content
+CREATE OR REPLACE FUNCTION admin.clone_schema(source_schema text, dest_schema text) RETURNS void AS
 $$
-LANGUAGE plpgsql;
+DECLARE
+  object text;
+  value bigint;
+  buffer text;
+  default_ text;
+  sequence_ text;
+  column_ text;
+  fullcolumn text;
+  fulltable text;
+  mess text;
+  constraint_name_ text;
+  constraint_def_ text;
+  rout_type text;
+  rout_data text;
+  rout_definition text;
+BEGIN
+    -- Make sure that the active schema is NOT the source schema. Otherwise
+    -- ALL queries to get foreign keys, sequences etc give us a short answer
+    -- without the schema name and NONE of the replaces below ever work.
+    SET SEARCH_PATH = 'admin';
+    RAISE NOTICE 'Cloning schema from (%) to (%) (current schema: %).',  source_schema, dest_schema, current_schema();
+    IF NOT EXISTS ( SELECT  *
+                FROM    pg_catalog.pg_namespace
+                WHERE   nspname = dest_schema )
+    THEN
+    BEGIN
+        EXECUTE 'CREATE SCHEMA ' || dest_schema ;
+        -- Create the sequences and reset their current value.
+        FOR object, value IN
+            select sequencename, last_value from pg_sequences where schemaname = source_schema
+        LOOP
+            buffer := dest_schema || '.' || object ;
+            RAISE NOTICE 'Creating sequence % with current value %', buffer, value;
+            EXECUTE 'CREATE SEQUENCE ' || buffer ;
+            PERFORM setval( buffer, value, true );
+        END LOOP;
+        -- Create the tables.
+        FOR object IN
+            SELECT table_name::text FROM information_schema.TABLES WHERE table_schema = source_schema AND table_type='BASE TABLE'
+        LOOP
+            EXECUTE format('CREATE TABLE %1$I.%2$I (LIKE %3$I.%4$I INCLUDING CONSTRAINTS INCLUDING INDEXES INCLUDING DEFAULTS INCLUDING IDENTITY)',dest_schema,object,source_schema,object);
+            FOR column_, default_ IN
+              SELECT column_name::text, column_default::text FROM information_schema.COLUMNS
+              WHERE table_schema = dest_schema AND table_name = object AND column_default LIKE 'nextval(%' || source_schema || '.%::regclass)'
+            LOOP
+              buffer := dest_schema || '.' || object ;
+              RAISE NOTICE 'Replacing sequence reference % by % in column %', default_, REPLACE(default_, source_schema, dest_schema), buffer || '.' || column_;
+              EXECUTE 'ALTER TABLE ' || buffer || ' ALTER COLUMN ' || column_ || ' SET DEFAULT ' || REPLACE(default_, source_schema, dest_schema);
+            END LOOP;
+        END LOOP;
+        -- Create views
+        FOR object IN
+            SELECT table_name::text FROM information_schema.TABLES WHERE table_schema = source_schema AND table_type='VIEW' ORDER BY table_name::text DESC
+        LOOP
+            EXECUTE format('create view %1$I.%2$I as %3$s', dest_schema, object, replace(pg_get_viewdef(source_schema ||'.' || object),source_schema, dest_schema));
+        END LOOP;
+
+        -- Create trigger functions
+        FOR rout_type, object, rout_data, rout_definition IN
+            SELECT routine_type, routine_name, data_type, routine_definition FROM information_schema.routines WHERE specific_schema = source_schema
+        LOOP
+            EXECUTE format('CREATE OR REPLACE %1$s %2$s.%3$s() RETURNS %4$s AS $s$ %5$s $s$ language "plpgsql";', rout_type, dest_schema, object, rout_data, rout_definition);
+        END LOOP;
+
+        -- Whole definitions: events, column lists, WHEN and REFERENCING included
+        FOR object IN
+        SELECT pg_get_triggerdef(t.oid) FROM pg_trigger AS t
+          JOIN pg_class AS c ON c.oid = t.tgrelid
+          JOIN pg_namespace AS n ON n.oid = c.relnamespace
+         WHERE n.nspname = source_schema AND NOT t.tgisinternal
+        LOOP
+            EXECUTE REPLACE(object, source_schema || '.', dest_schema || '.');
+        END LOOP;
+
+        -- reset the sequence table owner. Indexes depend on their columns too.
+        FOR object, column_, sequence_ IN
+            SELECT table_name::text, column_name, sequence_name from (
+               SELECT t.oid::regclass AS table_name, a.attname AS column_name, s.relname AS sequence_name
+                 FROM pg_class AS t
+                 JOIN pg_attribute AS a ON a.attrelid = t.oid
+                 JOIN pg_depend AS d ON d.refobjid = t.oid AND d.refobjsubid = a.attnum
+                 JOIN pg_class AS s ON s.oid = d.objid
+                where d.refobjsubid<>3 AND s.relkind = 'S'
+            ) as aaa WHERE table_name::text LIKE source_schema || '%.%'
+        LOOP
+            buffer := dest_schema || '.' || sequence_ ;
+            RAISE NOTICE 'Replacing sequence % owner from % to %', buffer, object || '.' || column_, REPLACE(object, source_schema, dest_schema) || '.' || column_;
+            EXECUTE format('ALTER SEQUENCE IF EXISTS %1$s OWNED BY %2$s.%3$s', buffer, REPLACE(object, source_schema, dest_schema), column_ );
+        END LOOP;
+        FOR object IN
+        SELECT table_name::text FROM information_schema.TABLES WHERE table_schema = source_schema and table_type='BASE TABLE'
+        LOOP
+            EXECUTE format('INSERT INTO %1$I.%2$I SELECT * FROM %3$I.%4$I',dest_schema,object,source_schema,object);
+        END LOOP;
+        -- reiterate tables and create foreign keys
+        FOR object IN
+        SELECT table_name::text FROM information_schema.TABLES WHERE table_schema = source_schema and table_type='BASE TABLE'
+        LOOP
+            buffer := dest_schema || '.' || object ;
+            -- create foreign keys
+            FOR constraint_name_, constraint_def_ IN
+            SELECT conname::text, pg_get_constraintdef(pg_constraint.oid) FROM pg_constraint INNER JOIN pg_class ON conrelid=pg_class.oid INNER JOIN pg_namespace ON pg_namespace.oid=pg_class.relnamespace WHERE contype='f' and relname=object and nspname=source_schema
+            LOOP
+            RAISE NOTICE 'Adding foreign key % from "%" to "%"', constraint_name_, constraint_def_, REPLACE(constraint_def_, source_schema||'.', dest_schema||'.');
+            EXECUTE 'ALTER TABLE '|| buffer ||' ADD CONSTRAINT '|| constraint_name_ ||' '|| REPLACE(constraint_def_, source_schema||'.', dest_schema||'.');
+            END LOOP;
+        END LOOP;
+    END;
+    END IF;
+END;
+$$ LANGUAGE plpgsql VOLATILE;
         )sql");
 }
 
@@ -1028,7 +1167,7 @@ LANGUAGE plpgsql;
  * Schema version 10 of import_space_content: resources are matched on their
  * ETP type as well as their guid, since a guid alone does not identify one.
 */
-void OpenKVAdminDB::update_import_space_content_function(Connection_ptr conn) {
+void OpenKVAdminDB::update_import_space_content_function_10(Connection_ptr conn) {
     conn->execute(R"sql(
 CREATE OR REPLACE FUNCTION admin.import_space_content(source_space text, dest_space text) RETURNS void AS
 $$

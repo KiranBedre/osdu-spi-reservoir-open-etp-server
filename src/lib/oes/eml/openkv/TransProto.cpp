@@ -241,7 +241,7 @@ void OpenKVTransProto::CommitTransaction(
                         OES_ERROR("Could not get writer for dataspace {}", space_uri);
                         continue;
                     }
-                    if(ctl.upsertActivityObjs(*writer, session->userName(), space_uri)) {
+                    if(ctl.upsertActivityObjs(*writer, session->userName(), space_uri, session->pg_bulk_size_)) {
                         writer->delete_null_res();
                     }
                 }
