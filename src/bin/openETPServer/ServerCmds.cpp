@@ -309,7 +309,24 @@ namespace {
                     }
                 }
                 else if (connectivity_mode == "osdu") {
+                    // Again, we try decoding the header with a dummy JWT secret, that will fail
+                    // of course, but give us the jwt_payload, to reparse that as JSON, and
+                    // we look for the "name" and "email" keys.
+                    auth::AuthDetails local_details;
+                    auth::AuthDetails& details = p_details? *p_details: local_details;
+                    auth::AuthenticatedUser decoded = auth::AuthenticatedUser::decodeFromHeader(
+                        auth_hdr, "jwt-secret", &details
+                    );
+                    decoded = auth::AuthenticatedUser::decodeFromJson(
+                        details.jwt_payload_, false, &details
+                    );
                     au = auth::AuthenticatedUser::getDefaultOsduUser();
+                    if (!decoded.name_.empty()) {
+                        au.name_ = decoded.name_;
+                    }
+                    if (!decoded.email_.empty()) {
+                        au.email_ = decoded.email_;
+                    }
                 } else {
                     au.name_ = "nobody"; // failed to get username from auth_hdr
                     au.email_ = "nobody";

@@ -25,3 +25,6 @@ data/
 
 # Environment configuration
 .envrc
+
+# AI Development
+agents/

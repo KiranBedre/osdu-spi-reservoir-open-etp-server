@@ -80,16 +80,16 @@ std::vector<std::string> extractXDataValues(const std::map<std::string, DataValu
     return {};
 };
 
-oes::osdu::api::EntitlementDataspace_ptr space_to_record(const oes::eml::openkv::Space& space, oes::common::auth::Entitlement_ptr e) {
+oes::osdu::api::EntitlementDataspace_ptr space_to_record(const oes::eml::openkv::Space& space, oes::common::auth::Entitlement_ptr e, bool getXdata=false) {
     const std::map<std::string,DataValue> xdata = space.xdataAsMap();
 
-    const std::vector<std::string> legalTags = extractXDataValues(xdata, "legaltags");
-    const std::vector<std::string> legalCountries = extractXDataValues(xdata, "otherRelevantDataCountries");
+    const std::vector<std::string> legalTags = getXdata? extractXDataValues(xdata, "legaltags") : std::vector<std::string>{};
+    const std::vector<std::string> legalCountries = getXdata? extractXDataValues(xdata, "otherRelevantDataCountries") : std::vector<std::string>{};
 
     if (e->isGroupBased()) {
-        std::vector<std::string> viewers = extractXDataValues(xdata, "viewers");
-        std::vector<std::string> owners = extractXDataValues(xdata, "owners");
-        if(!e->isValid()){
+        std::vector<std::string> viewers = getXdata? extractXDataValues(xdata, "viewers") : std::vector<std::string>{};
+        std::vector<std::string> owners = getXdata? extractXDataValues(xdata, "owners") : std::vector<std::string>{};
+        if(getXdata && !e->isValid()){
             auto e_groups = std::dynamic_pointer_cast<oes::common::auth::EntitlementGroups>(e);
             if (viewers.empty()) {
                 viewers.push_back(e_groups->viewersGroupMail());
@@ -313,6 +313,10 @@ std::vector<bool> BaseProto::checkDataspacesAccess(const std::vector<Space>& spa
     std::vector<std::string> uris_to_check;
     std::vector<size_t> index_map;
 
+    const bool entl_valid = session->entitlement_ && session->entitlement_->isValid();
+    const bool service_read = entl_valid && session->entitlement_->hasServicePermissionRead();
+    const bool service_update = entl_valid && ro==AccessType::CAN_WRITE && session->entitlement_->hasServicePermissionUpdate();
+
     for(size_t i{0}; i < spaces.size(); i++) {
         auto& space = spaces.at(i);
         if(!space.isValid()){
@@ -358,14 +362,14 @@ std::vector<bool> BaseProto::checkDataspacesAccess(const std::vector<Space>& spa
         }
 
         // Check if user is in viewers group OR read permission, if not no access at all
-        if (!session->entitlement_->hasServicePermissionRead()) {
+        if (!service_read) {
             cachedSpace.setReadAccess(false);
             res.push_back(false);
             continue;
         }
 
         // If not read-only, check if user is in owners group OR update permission, if not no access
-        if(ro==AccessType::CAN_WRITE && !session->entitlement_->hasServicePermissionUpdate()) {
+        if(ro==AccessType::CAN_WRITE && !service_update) {
             cachedSpace.setWriteAccess(false);
             res.push_back(false);
             continue;
@@ -377,6 +381,56 @@ std::vector<bool> BaseProto::checkDataspacesAccess(const std::vector<Space>& spa
         index_map.push_back(i);
         
     }
+
+    if (session->entitlement_ && session->entitlement_->isGroupBased()) {
+        if (index_map.empty()) {
+            return res;
+        }
+        auto entl_groups = std::dynamic_pointer_cast<oes::common::auth::EntitlementGroups>(session->entitlement_);
+        if (!entl_groups) {
+            err.m_code = ErrorCodes::ENOTSUPPORTED;
+            err.m_message = "Entitlement logic error.";
+            return {};
+        }
+
+        std::vector<oes::osdu::api::EntitlementDataspaceGroups_ptr> groups_ds;
+        groups_ds.reserve(index_map.size());
+        for (const size_t index : index_map) {
+            groups_ds.push_back(std::dynamic_pointer_cast<oes::osdu::api::EntitlementDataspaceGroups>(
+                space_to_record(spaces.at(index), session->entitlement_)));
+        }
+        auto groups_bulk_ds = std::make_shared<oes::osdu::api::EntitlementDataspaceGroupsBulk>(std::move(groups_ds));
+
+        std::vector<bool> can_read;
+        std::vector<bool> can_update;
+        const bool bulk_ok = entl_groups->canReadUpdateDataspaceBulk(groups_bulk_ds, can_read, can_update);
+        for(size_t i {0}; i < index_map.size(); i++) {
+            const auto& index = index_map.at(i);
+            const auto& space = spaces.at(index);
+
+            if (!bulk_ok) {
+                // Listing records may not be supported by this storage service
+                ErrorInfo space_err;
+                res[index] = checkDataspaceAccess(space, ro, space_err, unlock_op);
+                continue;
+            }
+
+            auto it = session->etp_space_by_path_.find(space.path_);
+            if(it==session->etp_space_by_path_.end()){
+                session->etp_space_by_uid_.emplace(space.uid_, space.path_);
+                session->etp_space_by_path_.emplace(space.path_,space);
+                it = session->etp_space_by_path_.find(space.path_);
+            }
+            const Space& cachedSpace = it->second;
+            cachedSpace.setReadAccess(can_read.at(i));
+            cachedSpace.setWriteAccess(can_update.at(i));
+
+            const bool isNotLocked = !space.ro_ || unlock_op ;
+            res[index] = ro == AccessType::CAN_READ ? can_read.at(i) : can_update.at(i) && isNotLocked;
+        }
+        return res;
+    }
+
     auto bulk_ds = std::make_shared<oes::osdu::api::EntitlementDataspacePolicyBulk>(
         uris_to_check,
         std::vector<std::string>(),
@@ -439,13 +493,13 @@ std::vector<bool> BaseProto::checkDataspacesAccess(const std::vector<Space>& spa
  * @param space The dataspace to register
  * @return true if the dataspace was registered
 */
-bool BaseProto::registerDataspace(const Space& space){
+bool BaseProto::registerDataspace(Space& space){
     OpenKVSession* session = session_.lock().get();
     if(session == nullptr) {
         return false;
     }
 
-    oes::osdu::api::EntitlementDataspace_ptr entl_ds = space_to_record(space, session->entitlement_);
+    oes::osdu::api::EntitlementDataspace_ptr entl_ds = space_to_record(space, session->entitlement_, true);
     if (session->entitlement_->config().osdu_->authorizationMode() == "simple" &&
         !session->entitlement_->canCreateDataspace(entl_ds)) {
         OES_ERROR("registerDataspace: canCreateDataspace denied for dataspace '{}' in simple auth mode", space.path_);
@@ -459,6 +513,18 @@ bool BaseProto::registerDataspace(const Space& space){
             space.path_, entl_err.status_);
     }
     if(ok){
+        // The storage record is now the only source for these values
+        if (session->entitlement_->config().osdu_->authorizationMode() != "simple") {
+            std::vector<std::string> keys {"legaltags", "otherRelevantDataCountries"};
+            if (session->entitlement_->isGroupBased()) {
+                keys.insert(keys.end(), {"viewers", "owners"});
+            }
+            auto xdata = space.xdataAsMap();
+            for (const auto& key : keys) {
+                xdata.erase(key);
+            }
+            space.setXDdataFromMap(xdata);
+        }
         space.setReadAccess(true);
         space.setWriteAccess(true);
         session->etp_space_by_uid_.emplace(space.uid_, space.path_);
@@ -480,7 +546,8 @@ bool BaseProto::unregisterDataspace(const Space& space){
     }
 
     oes::osdu::api::EntitlementDataspace_ptr entl_ds = space_to_record(space, session->entitlement_);
-    if (session->entitlement_->config().osdu_->authorizationMode() == "simple" &&
+    // For groups, this also loads the ACLs from the storage record (no longer kept in xdata)
+    if ((session->entitlement_->config().osdu_->authorizationMode() == "simple" || session->entitlement_->isGroupBased()) &&
         !session->entitlement_->canDeleteDataspace(entl_ds)) {
         return false;
     }

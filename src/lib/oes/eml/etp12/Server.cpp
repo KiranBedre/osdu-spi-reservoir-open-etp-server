@@ -2429,6 +2429,8 @@ void Session::onStart(
     client_identification_ = req.m_applicationName;
     if (!handshake_.client_id_.empty()) {
         client_identification_ += " @ " + handshake_.client_id_;
+    } else if (user_) {
+        client_identification_ += " @ (" + user_->email_ + ")@" + handshake_.data_partition_id_;
     }
 
    //res.m_currentDateTime set by caller, via pingPong()
