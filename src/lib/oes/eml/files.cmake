@@ -42,6 +42,8 @@ set( oes_eml_openkv_SOURCES
     openkv/AuditLog.cpp
     openkv/BaseProto.cpp
     openkv/ArrayProto.cpp
+    openkv/ArrayStats.cpp
+    openkv/ArrayReduce.cpp
     openkv/DiscoProto.cpp
     openkv/PGStream.cpp
     openkv/Repo.cpp
@@ -63,6 +65,9 @@ set( oes_eml_openkv_HEADERS
     openkv/AuditLog.h
     openkv/BaseProto.h
     openkv/ArrayProto.h
+    openkv/ArrayStats.h
+    openkv/ArrayReduce.h
+    openkv/NumericType.h
     openkv/DiscoProto.h
     openkv/PGStream.h
     openkv/Repo.h

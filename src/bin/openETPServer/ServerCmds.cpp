@@ -309,7 +309,24 @@ namespace {
                     }
                 }
                 else if (connectivity_mode == "osdu") {
+                    // Again, we try decoding the header with a dummy JWT secret, that will fail
+                    // of course, but give us the jwt_payload, to reparse that as JSON, and
+                    // we look for the "name" and "email" keys.
+                    auth::AuthDetails local_details;
+                    auth::AuthDetails& details = p_details? *p_details: local_details;
+                    auth::AuthenticatedUser decoded = auth::AuthenticatedUser::decodeFromHeader(
+                        auth_hdr, "jwt-secret", &details
+                    );
+                    decoded = auth::AuthenticatedUser::decodeFromJson(
+                        details.jwt_payload_, false, &details
+                    );
                     au = auth::AuthenticatedUser::getDefaultOsduUser();
+                    if (!decoded.name_.empty()) {
+                        au.name_ = decoded.name_;
+                    }
+                    if (!decoded.email_.empty()) {
+                        au.email_ = decoded.email_;
+                    }
                 } else {
                     au.name_ = "nobody"; // failed to get username from auth_hdr
                     au.email_ = "nobody";
@@ -457,6 +474,7 @@ namespace {
         config.dataPartitionMode_ = databaseMode(ctx);
         config.dataConnectivityMode_ = connectionMode(ctx);
         config.check_activities_ = ctx.args["check-activities"].as<bool>();
+        config.stable_import_activity_uuid_ = ctx.args["stable-import-activity-uuid"].as<bool>();
         if (auto pg_size = ctx.args["pg-bulk-size"].as<int>(); pg_size > 0) {
             config.pg_bulk_size_ = static_cast<size_t>(pg_size);
         } else {
@@ -599,6 +617,12 @@ int server_main(EmlAppContext& ctx, const UnparsedArgs& unparsed_args) {
         ("check-activities", 
             po::value<bool>()->default_value(true),
             "Check if new data has corresponding activity")
+
+        ("stable-import-activity-uuid",
+            po::value<bool>()->default_value(false),
+            "Derive the auto-generated import Activity UUID from the imported object set, "
+            "so re-importing the same objects overwrites the previous import Activity "
+            "(default: every import appends a new Activity)")
 
         // Auth-related options
         ("auth",    txtArg(),           "Deprecated: Legacy name of authN")

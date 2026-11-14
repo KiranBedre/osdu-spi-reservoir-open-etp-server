@@ -27,6 +27,9 @@
 #include "Session.h"
 #include "TransProto.h"
 #include "AuditLog.h"
+#include "ArrayStats.h"
+#include "ArrayReduce.h"
+#include "ComputeGate.h"
 
 #include "../etp12/Server.hpp"
 #include "../etp12/Extensions.h"
@@ -45,6 +48,7 @@
 #include <oes/core/utils/MetricsHelper.h>
 #include <oes/core/utils/MetricsNames.h>
 
+#include <map>
 #include <unordered_map>
 #include <numeric>
 #include <chrono>
@@ -4575,6 +4579,72 @@ void OpenKVDataArray::PutDataSubarraysBULK( // messageTypeId 5
     etp12::handleException(process_cb);
 }
 
+bool OpenKVDataArray::tryDispatchComputeOp(
+    GetDataArrayMetadata_req_t& req,
+    etp12::MultiPartReply<GetDataArrayMetadata_res_t>& reply,
+    EtpResponseHandler<GetDataArrayMetadata_res_t> process_cb,
+    oes::core::OtelSpan& span)
+{   // WARNING: Custom extension. NOT part of official ETP 1.2
+    // The compute extensions (STATS / REDUCE / WHERE / WHEREN) are the only
+    // CPU-bound metadata handlers. Detect the marker first; a marker that IS a
+    // compute request but is malformed is rejected outright (never silently
+    // treated as a plain metadata lookup). Then acquire the process-wide
+    // ComputeGate so the concurrency cap is enforced once; excess requests
+    // are rejected with ELIMIT_EXCEEDED rather than queued on the worker
+    // threads.
+    using namespace etp12::DataArrayExt;
+    enum class Op { None, Stats, Reduce, Where, MultiWhere };
+    Op op = Op::None;
+    const char* op_name = "";
+    std::string marker_err;
+    StatsQuery stats_query;
+    ReduceQuery reduce_query;
+    WhereQuery where_query;
+    MultiWhereQuery multiwhere_query;
+    if (is_array_stats_req(req, stats_query, marker_err)) {
+        op = Op::Stats; op_name = "STATS";
+    } else if (is_array_reduce_req(req, reduce_query, marker_err)) {
+        op = Op::Reduce; op_name = "REDUCE";
+    } else if (is_array_where_req(req, where_query, marker_err)) {
+        op = Op::Where; op_name = "WHERE";
+    } else if (is_array_multiwhere_req(req, multiwhere_query, marker_err)) {
+        op = Op::MultiWhere; op_name = "WHEREN";
+    } else {
+        return false;
+    }
+
+    if (!marker_err.empty()) {
+        oes::core::MetricsHelper::updateCounterMetric(oes::core::metrics::COMPUTE_OPS_COUNTER_REJECTED);
+        span.setError(fmt::format("Malformed {} marker: {}", op_name, marker_err));
+        reply.fatalError(EINVALID_ARGUMENT, fmt::format("malformed {} request: {}", op_name, marker_err));
+        return true;
+    }
+
+    ComputeGate gate(compute_max_concurrency());
+    if (!gate.acquired_) {
+        oes::core::MetricsHelper::updateCounterMetric(oes::core::metrics::COMPUTE_OPS_COUNTER_REJECTED);
+        span.setError("Compute concurrency limit reached");
+        reply.fatalError(ELIMIT_EXCEEDED,
+            "compute concurrency limit reached; retry later");
+        return true;
+    }
+
+    const auto compute_start = std::chrono::steady_clock::now();
+    bool ok = false;
+    switch (op) {
+    case Op::Stats: ok = GetDataArrayStats(stats_query, process_cb); break;
+    case Op::Reduce: ok = GetDataArrayReduce(reduce_query, process_cb); break;
+    case Op::Where: ok = GetDataArrayWhere(where_query, process_cb); break;
+    case Op::MultiWhere: ok = GetDataArrayMultiWhere(multiwhere_query, process_cb); break;
+    case Op::None: break;
+    }
+    if (ok) {
+        oes::core::MetricsHelper::recordCounterWithLatency(
+            oes::core::metrics::COMPUTE_OPS_COUNTER_SUCCESS, oes::core::metrics::COMPUTE_LATENCY, compute_start);
+    }
+    return true;
+}
+
 void OpenKVDataArray::GetDataArrayMetadata( // messageTypeId 6
     IRequest& ireq, GetDataArrayMetadata_req_t req,
     EtpResponseHandler<GetDataArrayMetadata_res_t> process_cb // messageTypeId 7
@@ -4616,6 +4686,11 @@ void OpenKVDataArray::GetDataArrayMetadata( // messageTypeId 6
         if (etp12::DataArrayExt::is_list_arrays_req(req, space_uid_or_path)) {
             return ListDataArrayMetadata(space_uid_or_path, process_cb);
         }
+    }
+
+    {   // WARNING: Custom extension. NOT part of official ETP 1.2
+        if (tryDispatchComputeOp(req, reply, process_cb, span))
+            return;
     }
 
     struct ArrayEntry {
@@ -4783,6 +4858,11 @@ void OpenKVDataArray::GetDataArrayMetadataBULK( // messageTypeId 6
         if (etp12::DataArrayExt::is_list_arrays_req(req, space_uid_or_path)) {
             return ListDataArrayMetadata(space_uid_or_path, process_cb);
         }
+    }
+
+    {   // WARNING: Custom extension. NOT part of official ETP 1.2
+        if (tryDispatchComputeOp(req, reply, process_cb, span))
+            return;
     }
 
     std::map<std::string, ProcessBulkArrayHelper> init_space_arrays;
@@ -5281,5 +5361,872 @@ select rank1, dim1, dim2, dim3, dim4, type, path,
 }
 
 //============================================================================
+
+//============================================================================
+
+// WARNING: Custom extension. NOT part of official ETP 1.2
+// Array identity (disco13, schema v16): arrays are keyed on their HDF container
+// and path -- the UNIQUE(epc_guid, path) key on the ary table. The request URI
+// may name EITHER the container (EpcExternalPartReference, whose guid IS
+// ary.epc_guid) OR, in RESQML 2.0.1, the OWNING data object that declared the
+// array. The shared AryContainerResolver::container_of maps either form to the
+// container guid, which then keys the same select_ary lookup the metadata/data
+// read path uses. The extension is single-array per request (the cid marker
+// encodes one array), so the resolver runs with bulk_size 1.
+static SqlAry resolve_compute_ary(
+    SpaceReader& r, const EmlUri& uri, const std::string& raw_path)
+{
+    const std::string path = (!raw_path.empty() && raw_path[0] == '/') ? raw_path.substr(1) : raw_path;
+    AryContainerResolver containers(r, 1);
+    const Guid container = containers.container_of(uri.to_string(), path);
+    if (!container.isValid()) {
+        return SqlAry{};
+    }
+    return r.select_ary(container, path);
+}
+
+// WARNING: Custom extension. NOT part of official ETP 1.2
+// Batched form of resolve_compute_ary for the multi-array ops: ONE
+// AryContainerResolver prefetch (the RESQML 2.0.1 owner-XML lookup, itself
+// batched) followed by bulk_get_ary keyed on (container_guid, path) in
+// bulk_size groups, instead of a container lookup + metadata SELECT per array.
+// Returns one SqlAry per input index, in input order, invalid where the
+// container/array could not be resolved.
+static std::vector<SqlAry> resolve_compute_arys(
+    SpaceReader& r, size_t bulk_size,
+    const std::vector<std::string>& uris, const std::vector<std::string>& paths)
+{
+    std::vector<SqlAry> out(uris.size());
+    if (uris.empty()) {
+        return out;
+    }
+    std::vector<std::string> norm_paths;
+    norm_paths.reserve(paths.size());
+    for (const std::string& p : paths) {
+        norm_paths.push_back((!p.empty() && p[0] == '/') ? p.substr(1) : p);
+    }
+    AryContainerResolver containers(r, std::max<size_t>(bulk_size, 1));
+    std::vector<int> unresolved;
+    auto [guids, sorted_paths, indexes] =
+        sorted_ary_keys_indexes(norm_paths, uris, containers, unresolved);
+    auto bulk = r.bulk_get_ary(guids, sorted_paths, indexes, std::max<size_t>(bulk_size, 1));
+    for (SqlAry& sql_ary : bulk) {
+        if (sql_ary.bulk_idx < out.size()) {
+            out[sql_ary.bulk_idx] = std::move(sql_ary);
+        }
+    }
+    return out;
+}
+
+// WARNING: Custom extension. NOT part of official ETP 1.2
+// Protocol-agnostic compute-core types + resolution step. The dataspace
+// resolution, access check, reader open and array lookup live in ONE place,
+// decoupled from how the response is encoded.
+struct ComputeOutcome {
+    bool ok = false;
+    bool has_error_info = false; // CAN_READ / reader open failure
+    ErrorInfo error_info;        // carried verbatim on the access path
+    ErrorCodes code = IS_OK;     // code + message on the other paths
+    std::string message;
+};
+
+struct ResolvedComputeArray {
+    SpaceReader_ptr reader; // keeps the opened reader alive for the fold
+    SqlAry sql_ary;         // the resolved array (metadata + bytes handle)
+    std::size_t elem = 0;   // numericElemSize(type); 0 => not a numeric array
+};
+
+ComputeOutcome OpenKVDataArray::resolveComputeArray(
+    const std::string& uri_s, const std::string& path, ResolvedComputeArray& out)
+{
+    ComputeOutcome oc;
+
+    EmlUri uri = EmlUri::parse(uri_s);
+    Space space = repo_->findSpaceInfo(uri.dataspace_);
+    if (!space.isValid()) {
+        oc.code = ENOT_FOUND;
+        oc.message = fmt::format("Dataspace not found: {}", uri.dataspace_);
+        return oc;
+    }
+
+    ErrorInfo err;
+    if (!checkDataspaceAccess(space, AccessType::CAN_READ, err)) {
+        oc.has_error_info = true;
+        oc.error_info = std::move(err);
+        return oc;
+    }
+
+    auto reader = repo_->getSpaceReader(space, err);
+    if (!reader) {
+        oc.has_error_info = true;
+        oc.error_info = std::move(err);
+        return oc;
+    }
+
+    SqlAry sql_ary = resolve_compute_ary(*reader, uri, path);
+    if (!sql_ary.valid()) {
+        oc.code = ENOT_FOUND;
+        oc.message = path;
+        return oc;
+    }
+
+    out.reader = std::move(reader);
+    out.elem = numericElemSize(sql_ary.type_);
+    out.sql_ary = std::move(sql_ary);
+    oc.ok = true;
+    return oc;
+}
+
+struct ResolvedComputeArrays {
+    std::vector<SqlAry> resolved;                   // one per input index, in order (invalid where unresolved)
+    std::map<std::string, SpaceReader_ptr> readers; // dataspace -> reader, kept alive for the fold
+};
+
+ComputeOutcome OpenKVDataArray::resolveComputeArrays(
+    const std::vector<std::string>& uris, const std::vector<std::string>& paths,
+    std::size_t bulk_size, ResolvedComputeArrays& out)
+{
+    ComputeOutcome oc;
+    out.resolved.assign(uris.size(), SqlAry{});
+    out.readers.clear();
+
+    // Group the inputs by dataspace so the CAN_READ check, reader open and the
+    // batched metadata lookup (resolve_compute_arys) are each paid once per
+    // dataspace rather than once per array.
+    std::map<std::string, std::vector<size_t>> by_space;
+    std::vector<std::string> ds_order;
+    for (size_t idx = 0; idx < uris.size(); ++idx) {
+        const std::string ds = EmlUri::parse(uris[idx]).dataspace_;
+        auto [it, inserted] = by_space.try_emplace(ds);
+        if (inserted) {
+            ds_order.push_back(ds);
+        }
+        it->second.push_back(idx);
+    }
+    for (const std::string& ds : ds_order) {
+        Space space = repo_->findSpaceInfo(ds);
+        if (!space.isValid()) {
+            oc.code = ENOT_FOUND;
+            oc.message = fmt::format("Dataspace not found: {}", ds);
+            return oc;
+        }
+        ErrorInfo err;
+        if (!checkDataspaceAccess(space, AccessType::CAN_READ, err)) {
+            oc.has_error_info = true;
+            oc.error_info = std::move(err);
+            return oc;
+        }
+        SpaceReader_ptr reader = repo_->getSpaceReader(space, err);
+        if (!reader) {
+            oc.has_error_info = true;
+            oc.error_info = std::move(err);
+            return oc;
+        }
+        const std::vector<size_t>& idxs = by_space[ds];
+        std::vector<std::string> us, ps;
+        us.reserve(idxs.size());
+        ps.reserve(idxs.size());
+        for (size_t idx : idxs) {
+            us.push_back(uris[idx]);
+            ps.push_back(paths[idx]);
+        }
+        std::vector<SqlAry> arys = resolve_compute_arys(*reader, bulk_size, us, ps);
+        for (size_t k = 0; k < idxs.size(); ++k) {
+            out.resolved[idxs[k]] = std::move(arys[k]);
+        }
+        out.readers.emplace(ds, std::move(reader));
+    }
+    oc.ok = true;
+    return oc;
+}
+
+// WARNING: Custom extension. NOT part of official ETP 1.2
+// Shared pieces of the compute handlers below.
+namespace {
+
+//! Integer-typed arrays (discrete / categorical / region properties) carry no
+//! NaN; the store's convention for "no value" is the type's minimum. Returns
+//! true and the sentinel for the integer types, false otherwise.
+bool integerNullSentinel(hdf::HdfAryType type, double& null_value) {
+    switch (type) {
+    case hdf::eAryOfInt:
+        null_value = static_cast<double>(std::numeric_limits<int32_t>::min());
+        return true;
+    case hdf::eAryOfLong:
+        null_value = static_cast<double>(std::numeric_limits<int64_t>::min());
+        return true;
+    default:
+        return false;
+    }
+}
+
+//! Grid shape from the stored dims. RESQML C-order stores the slowest axis
+//! first: dims = {Nk, Nj, Ni} (or {Nj, Ni} / {Ni}); higher-rank arrays take
+//! their trailing three axes. Returns false when there is no 2-D column shape.
+bool gridShapeOf(const SqlAry& sql_ary, uint64_t& ni, uint64_t& nj, uint64_t& nk) {
+    std::vector<int64_t> dims;
+    sql_ary.get_dimensions(dims);
+    ni = 0; nj = 1; nk = 1;
+    if (dims.size() >= 3) {
+        nk = static_cast<uint64_t>(std::max<int64_t>(0, dims[dims.size() - 3]));
+        nj = static_cast<uint64_t>(std::max<int64_t>(0, dims[dims.size() - 2]));
+        ni = static_cast<uint64_t>(std::max<int64_t>(0, dims[dims.size() - 1]));
+        for (size_t d = 0; d + 3 < dims.size(); ++d) {
+            nk *= static_cast<uint64_t>(std::max<int64_t>(0, dims[d]));
+        }
+    } else if (dims.size() == 2) {
+        nj = static_cast<uint64_t>(std::max<int64_t>(0, dims[0]));
+        ni = static_cast<uint64_t>(std::max<int64_t>(0, dims[1]));
+    } else if (dims.size() == 1) {
+        ni = static_cast<uint64_t>(std::max<int64_t>(0, dims[0]));
+    }
+    return ni != 0 && nj != 0 && nk != 0;
+}
+
+//! Stream `sql_ary` through `fold(type, data, n_elems, global_start)` one
+//! element-aligned ~1 MiB read window at a time against a shared deadline.
+//! Returns nullptr on success, else the ETP error (code, message) to report.
+struct FoldFailure {
+    ErrorCodes code = IS_OK;
+    std::string message;
+    bool timed_out = false;
+};
+
+template <typename Fold>
+bool streamArrayWindows(
+    SpaceReader& r, SqlAry& sql_ary, size_t elem, const std::string& path,
+    ComputeDeadline& deadline, std::vector<unsigned char>& buf, Fold&& fold, FoldFailure& failure)
+{
+    const int64_t total_bytes = static_cast<int64_t>(sql_ary.byte_size());
+    const int64_t win_elems = std::max<int64_t>(1, (int64_t(1) << 20) / int64_t(elem));
+    const int64_t win_bytes = win_elems * static_cast<int64_t>(elem);
+    const size_t need = static_cast<size_t>(std::min<int64_t>(win_bytes, std::max<int64_t>(total_bytes, 1)));
+    if (buf.size() < need) {
+        buf.resize(need);
+    }
+    for (int64_t off = 0; off < total_bytes; off += win_bytes) {
+        if (deadline.expired()) {
+            failure.timed_out = true;
+            failure.code = ETIMED_OUT;
+            failure.message = fmt::format("Compute exceeded time budget on array {}", path);
+            return false;
+        }
+        const int len = static_cast<int>(std::min<int64_t>(win_bytes, total_bytes - off));
+        const char* rerr = r.read_ary(sql_ary, buf.data(), len, off);
+        if (rerr) {
+            failure.code = EINVALID_STATE;
+            failure.message = fmt::format("Failed to read array {}: {}", path, rerr);
+            return false;
+        }
+        fold(sql_ary.type_, buf.data(), uint64_t(len) / uint64_t(elem), uint64_t(off) / uint64_t(elem));
+    }
+    return true;
+}
+
+//! Write the where() summary (whole passing set + optional connected body)
+//! into a reply part's custom data.
+void putWhereResult(DataArrayTypes::DataArrayMetadata& ary, const WhereResult& res, bool with_body) {
+    auto put = [&ary](const char* k, auto v) {
+        DataValue dv;
+        dv.m_item = v;
+        ary.m_customData.emplace(k, std::move(dv));
+    };
+    put("where.valid", res.valid);
+    put("where.count", static_cast<int64_t>(res.count));
+    if (!res.valid) {
+        return;
+    }
+    put("where.iMin", static_cast<int64_t>(res.imin));
+    put("where.iMax", static_cast<int64_t>(res.imax));
+    put("where.jMin", static_cast<int64_t>(res.jmin));
+    put("where.jMax", static_cast<int64_t>(res.jmax));
+    put("where.kMin", static_cast<int64_t>(res.kmin));
+    put("where.kMax", static_cast<int64_t>(res.kmax));
+    put("where.ci", res.ci);
+    put("where.cj", res.cj);
+    put("where.ck", res.ck);
+    if (!with_body) {
+        return;
+    }
+    // Largest connected body (6-connectivity): the drillable target volume.
+    put("where.components", static_cast<int64_t>(res.components));
+    put("where.bodyCount", static_cast<int64_t>(res.body_count));
+    put("where.biMin", static_cast<int64_t>(res.body_imin));
+    put("where.biMax", static_cast<int64_t>(res.body_imax));
+    put("where.bjMin", static_cast<int64_t>(res.body_jmin));
+    put("where.bjMax", static_cast<int64_t>(res.body_jmax));
+    put("where.bkMin", static_cast<int64_t>(res.body_kmin));
+    put("where.bkMax", static_cast<int64_t>(res.body_kmax));
+    put("where.bci", res.body_ci);
+    put("where.bcj", res.body_cj);
+    put("where.bck", res.body_ck);
+}
+
+} // namespace
+
+// WARNING: Custom extension. NOT part of official ETP 1.2
+// Streams the named array through an ArrayStatsAccumulator inside the store and
+// returns a small fixed-size summary via the reply's DataArrayMetadata custom
+// data. The array bytes never leave the store: only O(1 + bins) state is folded
+// per element-aligned read window, so a 100M-cell property never materialises.
+bool OpenKVDataArray::GetDataArrayStats(
+    const etp12::DataArrayExt::StatsQuery& query,
+    EtpResponseHandler<GetDataArrayMetadata_res_t> process_cb
+) try {
+    OpenKVSession* session = session_.lock().get();
+    if (session == nullptr) {
+        OES_ERROR("SVR Session has been forcefully terminated.");
+        return false;
+    }
+
+    etp12::MultiPartReply reply(*session, process_cb);
+    auto fail = [&](ErrorCodes code, std::string msg) {
+        oes::core::MetricsHelper::updateCounterMetric(oes::core::metrics::COMPUTE_OPS_COUNTER_ERROR);
+        reply.addError(query.cid, code, std::move(msg));
+        reply.finalProcess();
+        return false;
+    };
+
+    const std::string& path = query.path;
+    ResolvedComputeArray rca;
+    ComputeOutcome oc = resolveComputeArray(query.uri, path, rca);
+    if (!oc.ok) {
+        if (oc.has_error_info) {
+            oes::core::MetricsHelper::updateCounterMetric(oes::core::metrics::COMPUTE_OPS_COUNTER_ERROR);
+            reply.addError(query.cid, oc.error_info);
+            reply.finalProcess();
+            return false;
+        }
+        return fail(oc.code, oc.message);
+    }
+    SqlAry& sql_ary = rca.sql_ary;
+    SpaceReader& r = *rca.reader;
+    const size_t elem = rca.elem;
+    if (elem == 0) {
+        return fail(EINVALID_STATE, fmt::format("Array is not numeric, cannot compute stats: {}", path));
+    }
+
+    ArrayStatsOptions opts;
+    // Integer null sentinel (type minimum) is excluded from the numeric summary
+    // and reported in nullCount instead.
+    opts.has_null_value = integerNullSentinel(sql_ary.type_, opts.null_value);
+    opts.count_in_range = query.has_range;
+    if (query.has_range) {
+        opts.range_lo = query.range_lo;
+        opts.range_hi = query.range_hi;
+        opts.range_inclusive = true;
+    }
+    // Optional fixed-bin histogram (+ derived percentiles) over the same [lo, hi]
+    // domain, folded in the SAME streaming pass as the summary. The marker parser
+    // guarantees lo < hi and 1 <= bins <= kMaxStatsHistBins when has_histogram.
+    if (query.has_histogram) {
+        opts.histogram_bins = query.hist_bins;
+        opts.hist_lo = query.range_lo;
+        opts.hist_hi = query.range_hi;
+    }
+
+    ArrayStatsAccumulator acc(opts);
+
+    // Fold the array one element-aligned ~1 MiB read window at a time so the
+    // whole blob is never resident. read_ary() reassembles out-of-row chunks
+    // transparently; src_len and src_off are byte quantities.
+    std::vector<unsigned char> buf;
+    ComputeDeadline deadline(compute_max_runtime_ms());
+    FoldFailure failure;
+    if (!streamArrayWindows(r, sql_ary, elem, path, deadline, buf,
+            [&](hdf::HdfAryType type, const void* data, uint64_t n, uint64_t /*global_start*/) {
+                acc.accumulate(type, data, n);
+            }, failure)) {
+        if (failure.timed_out) {
+            oes::core::MetricsHelper::updateCounterMetric(oes::core::metrics::COMPUTE_OPS_COUNTER_TIMEOUT);
+            reply.addError(query.cid, failure.code, std::move(failure.message));
+            reply.finalProcess();
+            return false;
+        }
+        return fail(failure.code, std::move(failure.message));
+    }
+
+    const ArrayStatsResult stats = acc.finalize();
+
+    auto it_ary = reply.addMapPart(query.cid);
+    DataArrayTypes::DataArrayMetadata& ary = it_ary.first->second;
+    sql_ary.get_dimensions(ary.m_dimensions);
+    getAryType(sql_ary.type_, ary.m_transportArrayType);
+
+    // DataValue's variant has no uint64_t alternative; counts are cast to int64.
+    auto put = [&ary](const char* k, auto v) {
+        DataValue dv;
+        dv.m_item = v;
+        ary.m_customData.emplace(k, std::move(dv));
+    };
+    auto put_long_array = [&ary](const char* k, const std::vector<uint64_t>& vals) {
+        ArrayOfLong arr;
+        arr.m_values.reserve(vals.size());
+        for (uint64_t v : vals) {
+            arr.m_values.push_back(static_cast<int64_t>(v));
+        }
+        DataValue dv;
+        dv.m_item = std::move(arr);
+        ary.m_customData.emplace(k, std::move(dv));
+    };
+
+    put(etp12::DataArrayExt::kComputeSchemaKey, static_cast<int64_t>(etp12::DataArrayExt::kComputeSchemaVersion));
+    put("stats.valid", stats.valid);
+    put("stats.count", static_cast<int64_t>(stats.count));
+    put("stats.nullCount", static_cast<int64_t>(stats.null_count));
+    if (stats.valid) {
+        put("stats.min", stats.minimum);
+        put("stats.max", stats.maximum);
+        put("stats.mean", stats.mean);
+        put("stats.stddev", stats.stddev);
+        put("stats.sum", stats.sum);
+    }
+    if (query.has_range) {
+        put("stats.inRangeCount", static_cast<int64_t>(stats.in_range_count));
+        put("stats.rangeLo", query.range_lo);
+        put("stats.rangeHi", query.range_hi);
+    }
+    // Histogram + derived percentiles (p10/p50/p90). The bin counts are returned
+    // as a native ArrayOfLong; percentiles are interpolated from the cumulative
+    // histogram and are approximate to within one bin width.
+    if (!stats.histogram.empty()) {
+        put_long_array("stats.histogram", stats.histogram);
+        put("stats.histBins", static_cast<int64_t>(stats.histogram.size()));
+        put("stats.histLo", stats.hist_lo);
+        put("stats.histHi", stats.hist_hi);
+        put("stats.histUnderflow", static_cast<int64_t>(stats.hist_underflow));
+        put("stats.histOverflow", static_cast<int64_t>(stats.hist_overflow));
+        if (stats.valid) {
+            put("stats.p10", approxPercentile(stats, 0.10));
+            put("stats.p50", approxPercentile(stats, 0.50));
+            put("stats.p90", approxPercentile(stats, 0.90));
+        }
+    }
+
+    reply.finalProcess();
+    return true;
+} catch (...) {
+    etp12::handleException(process_cb);
+    return false;
+}
+
+//============================================================================
+
+// WARNING: Custom extension. NOT part of official ETP 1.2
+// Streams a 3-D property [Nk, Nj, Ni] through a ColumnReduceAccumulator and
+// returns the collapsed 2-D [Nj, Ni] column map via the reply's
+// DataArrayMetadata custom data. Generalises GetDataArrayStats from a single
+// scalar summary to a per-column map (net-pay / targeting maps). The array
+// bytes never leave the store: only the O(ncols) column state is folded per
+// element-aligned read window.
+bool OpenKVDataArray::GetDataArrayReduce(
+    const etp12::DataArrayExt::ReduceQuery& query,
+    EtpResponseHandler<GetDataArrayMetadata_res_t> process_cb
+) try {
+    OpenKVSession* session = session_.lock().get();
+    if (session == nullptr) {
+        OES_ERROR("SVR Session has been forcefully terminated.");
+        return false;
+    }
+
+    etp12::MultiPartReply reply(*session, process_cb);
+    auto fail = [&](ErrorCodes code, std::string msg) {
+        oes::core::MetricsHelper::updateCounterMetric(oes::core::metrics::COMPUTE_OPS_COUNTER_ERROR);
+        reply.addError(query.cid, code, std::move(msg));
+        reply.finalProcess();
+        return false;
+    };
+
+    ReduceOp op;
+    if (!parseReduceOp(query.op, op)) {
+        return fail(EINVALID_ARGUMENT, fmt::format("Unknown reduce operator: {}", query.op));
+    }
+    const bool needs_range = (op == ReduceOp::CountInRange || op == ReduceOp::NetThickness);
+    if (needs_range && !query.has_range) {
+        return fail(EINVALID_ARGUMENT,
+            fmt::format("Reduce operator '{}' requires a |lo|hi range", query.op));
+    }
+    if (!needs_range && (query.has_range || query.has_dz)) {
+        return fail(EINVALID_ARGUMENT,
+            fmt::format("Reduce operator '{}' takes no range/dz arguments", query.op));
+    }
+    if (op != ReduceOp::NetThickness && query.has_dz) {
+        return fail(EINVALID_ARGUMENT, "dz is only meaningful for the 'net' operator");
+    }
+
+    const std::string& path = query.path;
+    ResolvedComputeArray rca;
+    ComputeOutcome oc = resolveComputeArray(query.uri, path, rca);
+    if (!oc.ok) {
+        if (oc.has_error_info) {
+            oes::core::MetricsHelper::updateCounterMetric(oes::core::metrics::COMPUTE_OPS_COUNTER_ERROR);
+            reply.addError(query.cid, oc.error_info);
+            reply.finalProcess();
+            return false;
+        }
+        return fail(oc.code, oc.message);
+    }
+    SqlAry& sql_ary = rca.sql_ary;
+    SpaceReader& r = *rca.reader;
+    const size_t elem = rca.elem;
+    if (elem == 0) {
+        return fail(EINVALID_STATE, fmt::format("Array is not numeric, cannot reduce: {}", path));
+    }
+
+    uint64_t ni = 0, nj = 0, nk = 0;
+    if (!gridShapeOf(sql_ary, ni, nj, nk)) {
+        return fail(EINVALID_STATE, fmt::format("Array has no 2-D column shape: {}", path));
+    }
+    // The reply carries one double per column; refuse maps that would not fit a
+    // single ETP message rather than fail mid-encode.
+    if (ni * nj > etp12::DataArrayExt::kMaxReduceMapCells) {
+        return fail(ELIMIT_EXCEEDED,
+            fmt::format("Reduce map [{} x {}] exceeds the {}-cell reply limit for {}",
+                        nj, ni, etp12::DataArrayExt::kMaxReduceMapCells, path));
+    }
+    if (query.has_k_range && query.k0 >= nk) {
+        return fail(EINVALID_ARGUMENT,
+            fmt::format("K-zone [{}, {}) lies outside the {} layers of {}", query.k0, query.k1, nk, path));
+    }
+
+    ColumnReduceOptions opts;
+    opts.ni = ni;
+    opts.nj = nj;
+    opts.op = op;
+    opts.has_null_value = integerNullSentinel(sql_ary.type_, opts.null_value);
+    if (query.has_k_range) {
+        opts.has_k_range = true;
+        opts.k0 = query.k0;
+        opts.k1 = std::min<uint64_t>(query.k1, nk);
+    }
+    if (query.has_range) {
+        opts.range_lo = query.range_lo;
+        opts.range_hi = query.range_hi;
+    }
+    opts.cell_dz = query.has_dz ? query.cell_dz : 1.0;
+
+    ColumnReduceAccumulator acc(opts);
+
+    std::vector<unsigned char> buf;
+    ComputeDeadline deadline(compute_max_runtime_ms());
+    FoldFailure failure;
+    if (!streamArrayWindows(r, sql_ary, elem, path, deadline, buf,
+            [&](hdf::HdfAryType type, const void* data, uint64_t n, uint64_t global_start) {
+                acc.accumulate(type, data, n, global_start);
+            }, failure)) {
+        if (failure.timed_out) {
+            oes::core::MetricsHelper::updateCounterMetric(oes::core::metrics::COMPUTE_OPS_COUNTER_TIMEOUT);
+            reply.addError(query.cid, failure.code, std::move(failure.message));
+            reply.finalProcess();
+            return false;
+        }
+        return fail(failure.code, std::move(failure.message));
+    }
+
+    ColumnReduceResult res = acc.finalize();
+
+    auto it_ary = reply.addMapPart(query.cid);
+    DataArrayTypes::DataArrayMetadata& ary = it_ary.first->second;
+    // Advertise the reduced 2-D [Nj, Ni] shape, not the 3-D source shape.
+    ary.m_dimensions.clear();
+    ary.m_dimensions.push_back(static_cast<int64_t>(res.nj));
+    ary.m_dimensions.push_back(static_cast<int64_t>(res.ni));
+    getAryType(sql_ary.type_, ary.m_transportArrayType);
+
+    auto put = [&ary](const char* k, auto v) {
+        DataValue dv;
+        dv.m_item = v;
+        ary.m_customData.emplace(k, std::move(dv));
+    };
+    put(etp12::DataArrayExt::kComputeSchemaKey, static_cast<int64_t>(etp12::DataArrayExt::kComputeSchemaVersion));
+    put("reduce.op", query.op);
+    put("reduce.ni", static_cast<int64_t>(res.ni));
+    put("reduce.nj", static_cast<int64_t>(res.nj));
+    put("reduce.nk", static_cast<int64_t>(nk));
+    put("reduce.columns", static_cast<int64_t>(res.columns_with_data));
+    if (query.has_k_range) {
+        put("reduce.k0", static_cast<int64_t>(opts.k0));
+        put("reduce.k1", static_cast<int64_t>(opts.k1));
+    }
+    if (query.has_range) {
+        put("reduce.rangeLo", query.range_lo);
+        put("reduce.rangeHi", query.range_hi);
+    }
+    if (op == ReduceOp::NetThickness) {
+        put("reduce.dz", opts.cell_dz);
+    }
+    {
+        ArrayOfDouble arr;
+        arr.m_values = std::move(res.map);
+        DataValue dv;
+        dv.m_item = std::move(arr);
+        ary.m_customData.emplace("reduce.map", std::move(dv));
+    }
+
+    reply.finalProcess();
+    return true;
+} catch (...) {
+    etp12::handleException(process_cb);
+    return false;
+}
+
+//============================================================================
+
+// WARNING: Custom extension. NOT part of official ETP 1.2
+// Streams a property through a WhereAccumulator and returns the count of cells
+// in the [lo, hi] predicate plus their ijk bounding box and ijk centroid (aim
+// point) via the reply's DataArrayMetadata custom data. O(1) state regardless
+// of grid size.
+bool OpenKVDataArray::GetDataArrayWhere(
+    const etp12::DataArrayExt::WhereQuery& query,
+    EtpResponseHandler<GetDataArrayMetadata_res_t> process_cb
+) try {
+    OpenKVSession* session = session_.lock().get();
+    if (session == nullptr) {
+        OES_ERROR("SVR Session has been forcefully terminated.");
+        return false;
+    }
+
+    etp12::MultiPartReply reply(*session, process_cb);
+    auto fail = [&](ErrorCodes code, std::string msg) {
+        oes::core::MetricsHelper::updateCounterMetric(oes::core::metrics::COMPUTE_OPS_COUNTER_ERROR);
+        reply.addError(query.cid, code, std::move(msg));
+        reply.finalProcess();
+        return false;
+    };
+
+    const std::string& path = query.path;
+    ResolvedComputeArray rca;
+    ComputeOutcome oc = resolveComputeArray(query.uri, path, rca);
+    if (!oc.ok) {
+        if (oc.has_error_info) {
+            oes::core::MetricsHelper::updateCounterMetric(oes::core::metrics::COMPUTE_OPS_COUNTER_ERROR);
+            reply.addError(query.cid, oc.error_info);
+            reply.finalProcess();
+            return false;
+        }
+        return fail(oc.code, oc.message);
+    }
+    SqlAry& sql_ary = rca.sql_ary;
+    SpaceReader& r = *rca.reader;
+    const size_t elem = rca.elem;
+    if (elem == 0) {
+        return fail(EINVALID_STATE, fmt::format("Array is not numeric, cannot mask: {}", path));
+    }
+
+    uint64_t ni = 0, nj = 0, nk = 0;
+    if (!gridShapeOf(sql_ary, ni, nj, nk)) {
+        return fail(EINVALID_STATE, fmt::format("Array has no 2-D/3-D shape: {}", path));
+    }
+
+    WhereOptions opts;
+    opts.ni = ni;
+    opts.nj = nj;
+    opts.range_lo = query.range_lo;
+    opts.range_hi = query.range_hi;
+    opts.has_null_value = integerNullSentinel(sql_ary.type_, opts.null_value);
+
+    WhereAccumulator acc(opts);
+
+    std::vector<unsigned char> buf;
+    ComputeDeadline deadline(compute_max_runtime_ms());
+    FoldFailure failure;
+    if (!streamArrayWindows(r, sql_ary, elem, path, deadline, buf,
+            [&](hdf::HdfAryType type, const void* data, uint64_t n, uint64_t global_start) {
+                acc.accumulate(type, data, n, global_start);
+            }, failure)) {
+        if (failure.timed_out) {
+            oes::core::MetricsHelper::updateCounterMetric(oes::core::metrics::COMPUTE_OPS_COUNTER_TIMEOUT);
+            reply.addError(query.cid, failure.code, std::move(failure.message));
+            reply.finalProcess();
+            return false;
+        }
+        return fail(failure.code, std::move(failure.message));
+    }
+
+    const WhereResult res = acc.finalize();
+
+    auto it_ary = reply.addMapPart(query.cid);
+    DataArrayTypes::DataArrayMetadata& ary = it_ary.first->second;
+    sql_ary.get_dimensions(ary.m_dimensions);
+    getAryType(sql_ary.type_, ary.m_transportArrayType);
+
+    auto put = [&ary](const char* k, auto v) {
+        DataValue dv;
+        dv.m_item = v;
+        ary.m_customData.emplace(k, std::move(dv));
+    };
+    put(etp12::DataArrayExt::kComputeSchemaKey, static_cast<int64_t>(etp12::DataArrayExt::kComputeSchemaVersion));
+    put("where.rangeLo", query.range_lo);
+    put("where.rangeHi", query.range_hi);
+    putWhereResult(ary, res, /*with_body=*/false);
+
+    reply.finalProcess();
+    return true;
+} catch (...) {
+    etp12::handleException(process_cb);
+    return false;
+}
+
+//============================================================================
+
+// WARNING: Custom extension. NOT part of official ETP 1.2
+// AND of N per-array [lo, hi] predicates over ONE grid, streamed one array at a
+// time against a bit-per-cell mask, plus the largest 6-connected body of the
+// surviving cells. Every request key gets a reply part: the first (lowest)
+// WHEREN key carries the full result, each other key carries its own metadata
+// + predicate and a "where.ref" back to the first key, so a client that
+// correlates parts by key never sees a silently-missing entry.
+bool OpenKVDataArray::GetDataArrayMultiWhere(
+    const etp12::DataArrayExt::MultiWhereQuery& query,
+    EtpResponseHandler<GetDataArrayMetadata_res_t> process_cb
+) try {
+    OpenKVSession* session = session_.lock().get();
+    if (session == nullptr) {
+        OES_ERROR("SVR Session has been forcefully terminated.");
+        return false;
+    }
+
+    etp12::MultiPartReply reply(*session, process_cb);
+    // Errors are reported once under the first key: the whole batch is one
+    // query with one answer, so a partial per-key error list has no meaning.
+    auto fail = [&](ErrorCodes code, std::string msg) {
+        oes::core::MetricsHelper::updateCounterMetric(oes::core::metrics::COMPUTE_OPS_COUNTER_ERROR);
+        reply.addError(query.cid, code, std::move(msg));
+        reply.finalProcess();
+        return false;
+    };
+
+    // The parser guarantees 1 <= entries <= kMaxMultiWhereEntries.
+    if (query.entries.empty()) {
+        return fail(EINVALID_ARGUMENT, "WHEREN requires >= 1 array predicate");
+    }
+
+    // Resolve every predicate array's metadata up-front in batched SQL (one
+    // AryContainerResolver prefetch + bulk_get_ary per dataspace) instead of a
+    // container lookup + metadata SELECT per array.
+    ResolvedComputeArrays resolved_arrays;
+    {
+        std::vector<std::string> uris, paths;
+        uris.reserve(query.entries.size());
+        paths.reserve(query.entries.size());
+        for (const auto& e : query.entries) {
+            uris.push_back(e.uri);
+            paths.push_back(e.path);
+        }
+        ComputeOutcome oc = resolveComputeArrays(uris, paths, session->pg_bulk_size_, resolved_arrays);
+        if (!oc.ok) {
+            if (oc.has_error_info) {
+                oes::core::MetricsHelper::updateCounterMetric(oes::core::metrics::COMPUTE_OPS_COUNTER_ERROR);
+                reply.addError(query.cid, oc.error_info);
+                reply.finalProcess();
+                return false;
+            }
+            return fail(oc.code, oc.message);
+        }
+    }
+    std::vector<SqlAry>& resolved = resolved_arrays.resolved;
+
+    // Validate ALL entries (resolved, numeric, same grid) BEFORE streaming any
+    // bytes, so a bad last entry does not waste the fold of the first ones.
+    uint64_t ni0 = 0, nj0 = 0, nk0 = 0;
+    std::vector<size_t> elems(query.entries.size(), 0);
+    for (size_t idx = 0; idx < query.entries.size(); ++idx) {
+        const std::string& path = query.entries[idx].path;
+        const SqlAry& sql_ary = resolved[idx];
+        if (!sql_ary.valid()) {
+            return fail(ENOT_FOUND, path);
+        }
+        elems[idx] = numericElemSize(sql_ary.type_);
+        if (elems[idx] == 0) {
+            return fail(EINVALID_STATE, fmt::format("Array is not numeric, cannot mask: {}", path));
+        }
+        uint64_t ni = 0, nj = 0, nk = 0;
+        if (!gridShapeOf(sql_ary, ni, nj, nk)) {
+            return fail(EINVALID_STATE, fmt::format("Array has no 2-D/3-D shape: {}", path));
+        }
+        if (idx == 0) {
+            ni0 = ni; nj0 = nj; nk0 = nk;
+        } else if (ni != ni0 || nj != nj0 || nk != nk0) {
+            return fail(EINVALID_STATE,
+                fmt::format("Array {} shape [{},{},{}] does not match the first predicate's grid [{},{},{}]",
+                            path, nk, nj, ni, nk0, nj0, ni0));
+        }
+    }
+
+    MultiWhereAccumulator acc(ni0, nj0, nk0);
+
+    // ONE deadline and ONE read buffer span the whole batch: the budget is per
+    // request, not per array.
+    std::vector<unsigned char> buf;
+    ComputeDeadline deadline(compute_max_runtime_ms());
+    size_t arrays_streamed = 0;
+    for (size_t idx = 0; idx < query.entries.size(); ++idx) {
+        const etp12::DataArrayExt::MultiWhereEntry& e = query.entries[idx];
+        SqlAry& sql_ary = resolved[idx];
+        SpaceReader& r = *resolved_arrays.readers.at(EmlUri::parse(e.uri).dataspace_);
+
+        WherePredicate pred;
+        pred.range_lo = e.range_lo;
+        pred.range_hi = e.range_hi;
+        pred.has_null_value = integerNullSentinel(sql_ary.type_, pred.null_value);
+        acc.beginArray(pred);
+
+        FoldFailure failure;
+        if (!streamArrayWindows(r, sql_ary, elems[idx], e.path, deadline, buf,
+                [&](hdf::HdfAryType type, const void* data, uint64_t n, uint64_t global_start) {
+                    acc.accumulate(type, data, n, global_start);
+                }, failure)) {
+            if (failure.timed_out) {
+                oes::core::MetricsHelper::updateCounterMetric(oes::core::metrics::COMPUTE_OPS_COUNTER_TIMEOUT);
+                reply.addError(query.cid, failure.code, std::move(failure.message));
+                reply.finalProcess();
+                return false;
+            }
+            return fail(failure.code, std::move(failure.message));
+        }
+        acc.commitArray();
+        ++arrays_streamed;
+
+        // Short-circuit: once the AND-mask is empty no later predicate can
+        // revive a cell, so skip the remaining reads entirely.
+        if (acc.empty()) {
+            break;
+        }
+    }
+
+    const WhereResult res = acc.finalize();
+
+    // One part per request key. The first (lowest) key carries the result.
+    for (size_t idx = 0; idx < query.entries.size(); ++idx) {
+        const etp12::DataArrayExt::MultiWhereEntry& e = query.entries[idx];
+        auto it_ary = reply.addMapPart(e.cid);
+        DataArrayTypes::DataArrayMetadata& ary = it_ary.first->second;
+        resolved[idx].get_dimensions(ary.m_dimensions);
+        getAryType(resolved[idx].type_, ary.m_transportArrayType);
+
+        auto put = [&ary](const char* k, auto v) {
+            DataValue dv;
+            dv.m_item = v;
+            ary.m_customData.emplace(k, std::move(dv));
+        };
+        put(etp12::DataArrayExt::kComputeSchemaKey, static_cast<int64_t>(etp12::DataArrayExt::kComputeSchemaVersion));
+        put("where.rangeLo", e.range_lo);
+        put("where.rangeHi", e.range_hi);
+        if (idx == 0) {
+            put("where.arrays", static_cast<int64_t>(query.entries.size()));
+            put("where.arraysStreamed", static_cast<int64_t>(arrays_streamed));
+            putWhereResult(ary, res, /*with_body=*/true);
+        } else {
+            put("where.ref", query.cid);
+        }
+    }
+
+    reply.finalProcess();
+    return true;
+} catch (...) {
+    etp12::handleException(process_cb);
+    return false;
+}
 
 } // namespace oes::eml::openkv

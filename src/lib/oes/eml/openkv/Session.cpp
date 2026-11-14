@@ -17,6 +17,7 @@
 
 #include "Session.h"
 
+#include <algorithm>
 #include <chrono>
 
 #include <oes/core/utils/config_enter_3rdparty.h>
@@ -61,7 +62,8 @@ void TransactionActControl::fill_resource_(
     
 }
 
-std::vector<TransactionActControl::ObjMapVal_t> TransactionActControl::get_activities_to_put(SpaceWriter& writer, const std::string& cid) {
+
+std::vector<TransactionActControl::ObjMapVal_t> TransactionActControl::get_activities_to_put(SpaceWriter& writer, const std::string& cid, bool stable_uuid) {
     std::string activity_xml;
     size_t index {0};
 
@@ -149,7 +151,28 @@ std::vector<TransactionActControl::ObjMapVal_t> TransactionActControl::get_activ
     const auto creation_time_sec { std::chrono::duration_cast<std::chrono::seconds>(creation_time.time_since_epoch()).count() };
     
     // make the Activity data
-    const auto new_activity_uuid = Guid::make().toXmlString();
+    //
+    // Default: a fresh random UUID, i.e. every import appends its own Activity.
+    // Opt-in (--stable-import-activity-uuid): a name-based (v5) UUID derived from
+    // the sorted output object UUIDs, so an identical re-import overwrites the
+    // same Activity instead of creating a new one.
+    std::string new_activity_uuid;
+    if (stable_uuid) {
+        std::vector<std::string> output_uuids;
+        output_uuids.reserve(analyzed_objects_.size());
+        for (const auto& kv : analyzed_objects_) {
+            output_uuids.emplace_back(kv.second.uuid_);
+        }
+        std::sort(output_uuids.begin(), output_uuids.end());
+        std::string seed;
+        for (const auto& u : output_uuids) {
+            seed.append(u);
+            seed.push_back('|');
+        }
+        new_activity_uuid = Guid::make_deterministic(Guid::oes_namespace(), seed).toXmlString();
+    } else {
+        new_activity_uuid = Guid::make().toXmlString();
+    }
 
     auto [act_data, footer] = oes::common::epc::get_xml_header_and_footer(
         "resqml20:Activity",
@@ -227,7 +250,7 @@ std::vector<TransactionActControl::ObjMapVal_t> TransactionActControl::get_activ
     };
 }
 
-bool TransactionActControl::upsertActivityObjs(SpaceWriter& writer, const std::string& user_id, const std::string& space_uri) {
+bool TransactionActControl::upsertActivityObjs(SpaceWriter& writer, const std::string& user_id, const std::string& space_uri, size_t bulk_size, bool stable_uuid) {
     bool has_nullified_guid = false ;
     if( !has_import_template_already_ ){
         // Attempt to find the template
@@ -242,7 +265,7 @@ bool TransactionActControl::upsertActivityObjs(SpaceWriter& writer, const std::s
         }
     }
 
-    auto objects = get_activities_to_put(writer, user_id);
+    auto objects = get_activities_to_put(writer, user_id, stable_uuid);
     
     if(objects.size() > 0){
         OES_INFO("Commiting missing activity object for dataspace {}", space_uri);
@@ -297,13 +320,7 @@ bool TransactionActControl::upsertActivityObjs(SpaceWriter& writer, const std::s
         }
     }
 
-    if (refs.size() < 50) {
-        for (const auto& ref: refs) {
-            writer.insert_rel(ref);
-        }
-    } else {
-        writer.bulk_insert_rels(refs, 50);
-    }
+    writer.bulk_insert_rels(refs, bulk_size);
 
     return has_nullified_guid ;
 }

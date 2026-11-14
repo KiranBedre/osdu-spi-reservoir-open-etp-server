@@ -109,6 +109,7 @@ public:
     bool authZ_enabled_ {false};
     std::string client_identification_;
     bool check_activities_ {false};
+    bool stable_import_activity_uuid_ {false};
     size_t pg_bulk_size_ {100};
 
 public:
@@ -218,6 +219,7 @@ struct OES_EML_EXPORT ServerConfig {
     std::string trace_file_;
 
     bool check_activities_ = false;
+    bool stable_import_activity_uuid_ = false;
     size_t pg_bulk_size_ = 100;
 
     enum Flavor { WebSocketPP, BoostBeast };

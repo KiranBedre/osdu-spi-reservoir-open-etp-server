@@ -40,7 +40,7 @@ public:
 
     std::shared_ptr<OpenKVSession> session() const { return session_.lock(); }
     OpenKVRepo_ptr repo() const { return repo_; }
-    bool registerDataspace(const Space& space);
+    bool registerDataspace(Space& space);
     bool unregisterDataspace(const Space& space);
     bool checkDataspaceAccess(const Space& space, AccessType ro, ErrorInfo& err, bool unlock_op = false) const;
     std::vector<bool> checkDataspacesAccess(const std::vector<Space>& spaces, AccessType ro, ErrorInfo& err, bool unlock_op = false) const;

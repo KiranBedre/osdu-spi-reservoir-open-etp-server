@@ -142,6 +142,27 @@ public:
         return negotiated_max_msg_size_;
     }
 
+    // True when the connected server advertised the array-compute extensions
+    // (currently "stats,histogram,reduce,where,wheren") at negotiation. An un-updated store
+    // server (e.g. an "OSDU M27" build without the array-compute handlers) does
+    // not advertise them, so compute requests must not be dispatched to it.
+    bool server_supports_array_compute() const {
+        return server_supports_array_compute_;
+    }
+
+    // Comma-separated list of array-compute extensions advertised by the server
+    // (empty when none were advertised).
+    const std::string& server_array_compute_extensions() const {
+        return server_array_compute_extensions_;
+    }
+
+    // Guard for compute routes: returns true only when the connected server
+    // advertised the array-compute extensions. When it has not (un-updated M27
+    // store server), fills *p_info with an ENOTSUPPORTED error (if non-null) so
+    // the caller can refuse to route the compute request instead of silently
+    // mis-sending it as a plain GetDataArrayMetadata.
+    bool guard_array_compute(data12::ErrorInfo* p_info = nullptr) const;
+
     proto12::IProtocol* getProtocol(data12::Protocol proto_id);
 
     template <typename TProto>
@@ -169,6 +190,8 @@ private:
     ClientConfig config_;
     ClientImpl_ptr impl_;
     size_t negotiated_max_msg_size_ = 0;
+    bool server_supports_array_compute_ = false;
+    std::string server_array_compute_extensions_;
 
     std::array<uint8_t, 16> session_uuid_;
     bool can_reconnect_ = false;

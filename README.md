@@ -473,6 +473,8 @@ When you import an epc file with this flag, the client will check if the incommi
 ##### the --check-activities option
 When you start the etp-server with this flag, then the server will, for each transaction (local or not), check if there is an incomming `activity object` and relates other incomming objects. If any of these incomming objects are not related to any activity object, then the server will create an automated import activity to relate them.
 
+By default every import appends its own Activity (random UUID), so the history of imports is preserved. With `--stable-import-activity-uuid true` the generated import Activity instead gets a name-based (UUID v5) identifier derived from the sorted UUIDs of the objects it relates, so re-importing the same set of objects overwrites that Activity rather than adding one per import. `--check-activities false` disables the generation entirely.
+
 ##### Using default openETPserver client
 
 The following commands are examples to show the functionality and the syntax. Remove the `data-partition-id` options when in the single-partition mode. Remove the `auth` and `jwt-token` options if authentication is not enabled. Change the protocol in the URL if needed.

@@ -347,6 +347,11 @@ Info: {
       "item": {
         "long": 2000000000
       }
+    },
+    "supportedArrayExtensions": {
+      "item": {
+        "string": "stats,histogram,reduce,where,wheren"
+      }
     }
   }
 }

@@ -35,6 +35,13 @@ Options:
   --overwrite                           Overwrite existing EPC on Direct-import
   --check-activities arg (=1)           Check if new data has corresponding 
                                         activity
+  --stable-import-activity-uuid arg (=0)
+                                        Derive the auto-generated import 
+                                        Activity UUID from the imported object 
+                                        set, so re-importing the same objects 
+                                        overwrites the previous import Activity
+                                        (default: every import appends a new 
+                                        Activity)
   --auth arg                            Deprecated: Legacy name of authN
   -N [ --authN ] arg (=builtin)         Authentication: 'none', 'builtin', or 
                                         'delegate=URL'

@@ -257,16 +257,17 @@ bool EntitlementDataspaceClient::delDataspaceRecord(
     assert(impl_->base_client_);
     assert(impl_->config_);
     assert(!impl_->config_->storageUrl().empty());
+    // Logical delete: a DELETE (purge) requires the storage admin role
     std::string req_url = 
-        impl_->config_->storageUrl() + impl_->config_->recordsPath() + "/" + dataspace.idForQuery(*(impl_->config_));
+        impl_->config_->storageUrl() + impl_->config_->recordsPath() + "/" + dataspace.idForQuery(*(impl_->config_)) + ":delete";
     // telemetry
     // cppcheck-suppress unreadVariable
     auto span = oes::core::OtelSpan("EntitlementClient." + std::string(__func__),
-                                    {{"http.method", "DELETE"},
+                                    {{"http.method", "POST"},
                                      {"http.url", req_url}});
     // make request
     oes::core::HTTP::Response res = impl_->base_client_->makeRequest(
-        oes::core::HTTP::Method::eDELETE,
+        oes::core::HTTP::Method::ePOST,
         bearerToken,
         req_url,
         {}/*queryParams*/,
@@ -338,6 +339,63 @@ bool EntitlementDataspaceClient::getDataspaceRecord(
             dataspace.uid_, dataspace.path_);
         return false;
     }
+    return true;
+}
+
+bool EntitlementDataspaceClient::getDataspaceRecordsBulk(
+    const std::string& bearerToken,
+    const EntitlementDataspaceGroupsBulk& dataspaces,
+    std::vector<bool>& found,
+    EntitlementError& err) const {
+    assert(impl_->base_client_);
+    assert(impl_->config_);
+    assert(!impl_->config_->storageUrl().empty());
+
+    found.assign(dataspaces.dataspaces_.size(), false);
+    if (dataspaces.dataspaces_.empty()) {
+        return true;
+    }
+
+    const std::string req_url = impl_->config_->storageUrl() + impl_->config_->recordsPath();
+    const std::vector<std::string> additional_headers = {
+        "Accept: application/json"
+    };
+    const auto index_by_id = dataspaces.indexById(*(impl_->config_));
+
+    std::string cursor;
+    do {
+        const std::string query = dataspaces.queryParams(*(impl_->config_), cursor);
+        // cppcheck-suppress unreadVariable
+        auto span = oes::core::OtelSpan("EntitlementClient." + std::string(__func__),
+                                        {{"http.method", "GET"},
+                                         {"http.url", req_url + query}});
+        oes::core::HTTP::Response res = impl_->base_client_->makeRequest(
+            oes::core::HTTP::Method::eGET,
+            bearerToken,
+            req_url,
+            query,
+            additional_headers,
+            {}/*Fields params*/,
+            nullptr/*body*/
+        );
+        span.setAttr("response.code", res.code);
+        err.code_ = res.code;
+        err.status_ = res.status;
+        if (res.code == 403) { // no storage access at all
+            found.assign(dataspaces.dataspaces_.size(), false);
+            return true;
+        }
+        if (res.code != 200) {
+            err.status_ += " " + res.body;
+            return false;
+        }
+        if (!dataspaces.deserialize(res.body, index_by_id, found, cursor)) {
+            err.code_ = -1;
+            err.status_ = "Failed to parse response while listing dataspace records.";
+            return false;
+        }
+    } while (!cursor.empty());
+
     return true;
 }
 

@@ -134,6 +134,16 @@ void setUpPrometheus() {
     oes::core::Metrics::instance().setCounter(oes::core::metrics::TRANSACTION_OPS_COUNTER_ROLLBACK_SUCCESS, transaction_ops_counter_rollback_success);
     oes::core::Metrics::instance().setCounter(oes::core::metrics::TRANSACTION_OPS_COUNTER_ROLLBACK_ERROR, transaction_ops_counter_rollback_error);
 
+    // Compute-extension counters (custom EXTENSION, NOT part of official ETP 1.2)
+    auto& compute_ops_counter_success  = etp_ops_counter.Add({{"protocol", "compute"}, {"operation", "fold"}, {"status", "success"}});
+    auto& compute_ops_counter_error    = etp_ops_counter.Add({{"protocol", "compute"}, {"operation", "fold"}, {"status", "error"}});
+    auto& compute_ops_counter_rejected = etp_ops_counter.Add({{"protocol", "compute"}, {"operation", "fold"}, {"status", "rejected"}});
+    auto& compute_ops_counter_timeout  = etp_ops_counter.Add({{"protocol", "compute"}, {"operation", "fold"}, {"status", "timeout"}});
+    oes::core::Metrics::instance().setCounter(oes::core::metrics::COMPUTE_OPS_COUNTER_SUCCESS, compute_ops_counter_success);
+    oes::core::Metrics::instance().setCounter(oes::core::metrics::COMPUTE_OPS_COUNTER_ERROR, compute_ops_counter_error);
+    oes::core::Metrics::instance().setCounter(oes::core::metrics::COMPUTE_OPS_COUNTER_REJECTED, compute_ops_counter_rejected);
+    oes::core::Metrics::instance().setCounter(oes::core::metrics::COMPUTE_OPS_COUNTER_TIMEOUT, compute_ops_counter_timeout);
+
     // Declare summaries
     auto& message_latencies_summary = prometheus::BuildSummary().Name("ws_message_latencies")
                                                                 .Help("Latencies of WS messages")
@@ -211,6 +221,11 @@ void setUpPrometheus() {
     oes::core::Metrics::instance().setSummary(oes::core::metrics::TRANSACTION_LATENCY_START, transaction_latency_start);
     oes::core::Metrics::instance().setSummary(oes::core::metrics::TRANSACTION_LATENCY_COMMIT, transaction_latency_commit);
     oes::core::Metrics::instance().setSummary(oes::core::metrics::TRANSACTION_LATENCY_ROLLBACK, transaction_latency_rollback);
+
+    // Compute-extension latency (custom EXTENSION): wall-clock time of completed folds.
+    auto& compute_latency = etp_latency_summary.Add(
+        {{"protocol", "compute"}, {"operation", "fold"}}, prometheus::Summary::Quantiles{{0.5, 0.05}, {0.9, 0.01}, {0.99, 0.001}});
+    oes::core::Metrics::instance().setSummary(oes::core::metrics::COMPUTE_LATENCY, compute_latency);
 
     // ETP message payload-size histograms (on-the-wire bytes).
     auto& etp_message_bytes = prometheus::BuildHistogram().Name("etp_message_bytes")

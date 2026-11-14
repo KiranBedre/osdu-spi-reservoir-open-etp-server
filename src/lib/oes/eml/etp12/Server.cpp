@@ -2272,6 +2272,18 @@ Server::Server(
         val.m_item = config_.dataConnectivityMode_;
     }
 
+    // Advertise the server-side array-compute extensions this build implements
+    // (custom, NOT part of official ETP 1.2). Clients use this to decide
+    // whether to offload statistics to the store or fall back to a client-side
+    // implementation. It is a plain endpoint-capability string, so clients that
+    // do not understand the key simply ignore it. NOTE: this changes the
+    // .well-known GetServerCapabilities and OpenSession responses compared to
+    // earlier releases (an additive key).
+    {
+        auto& val = cap.m_endpointCapabilities["supportedArrayExtensions"];
+        val.m_item = std::string("stats,histogram,reduce,where,wheren");
+    }
+
     impl_->config_ = &config_;
 }
 
@@ -2429,6 +2441,8 @@ void Session::onStart(
     client_identification_ = req.m_applicationName;
     if (!handshake_.client_id_.empty()) {
         client_identification_ += " @ " + handshake_.client_id_;
+    } else if (user_) {
+        client_identification_ += " @ (" + user_->email_ + ")@" + handshake_.data_partition_id_;
     }
 
    //res.m_currentDateTime set by caller, via pingPong()
@@ -2567,10 +2581,24 @@ void Session::onStart(
     // do not return more that this many items per message.
     max_batch_size_ = impl->config_->max_batch_size_;
     check_activities_ = impl->config_->check_activities_;
+    stable_import_activity_uuid_ = impl->config_->stable_import_activity_uuid_;
     pg_bulk_size_ = impl->config_->pg_bulk_size_;
     OES_VERBOSE(
         "SVR Session MaxBatchSize = {}", thou(max_batch_size_)
     );
+
+    // Cap#3 supportedArrayExtensions (custom, advisory, NOT ETP standard)
+    // Forward the static server capability into the per-session OpenSession
+    // response: native ETP clients negotiate via OpenSession and would
+    // otherwise never see it. Clients that do not know the key ignore it.
+    {
+        constexpr char array_ext_key[] = "supportedArrayExtensions";
+        const auto& server_caps = impl->config_->server_capabilities_.m_endpointCapabilities;
+        auto array_ext_found = server_caps.find(array_ext_key);
+        if (array_ext_found != server_caps.end()) {
+            res.m_endpointCapabilities[array_ext_key] = array_ext_found->second;
+        }
+    }
 
     // Negotiate compression
     const auto& clt_zcomp = req.m_supportedCompression;
@@ -2690,6 +2718,7 @@ void Session::resumeFromExistingSession(std::shared_ptr<Session> other) {
     negotiated_compression_ = other->negotiated_compression_;
     max_batch_size_ = other->max_batch_size_;
     check_activities_ = other->check_activities_;
+    stable_import_activity_uuid_ = other->stable_import_activity_uuid_;
     pg_bulk_size_ = other->pg_bulk_size_;
     threads_count_ = other->threads_count_;
     

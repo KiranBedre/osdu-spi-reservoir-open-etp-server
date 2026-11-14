@@ -677,6 +677,88 @@ BOOST_AUTO_TEST_CASE(test_DataArray9_blob_sharding) {
     }
 }
 
+// Regression for the bulk bytea[] bind buffer: one PutDataArrays request whose
+// total payload exceeds SpaceWriter's per-batch byte cap (64 MiB). Before the
+// cap, bulk_insert_bin() concatenated every chunk of every array in the request
+// into ONE bytea[] bind buffer (bounded only by the array count, not bytes), so
+// a single large request allocated a multi-hundred-MB buffer and a >2GB request
+// wrapped the 32-bit libpq length. Two 40 MiB arrays force a byte-triggered
+// flush in the middle of the second array's chunk run, so its chunks are split
+// across two bulk INSERTs; both arrays must still read back intact, whole and
+// in pieces.
+BOOST_AUTO_TEST_CASE(test_DataArray9_PutDataArrays_bulk_bind_byte_cap) {
+    auto space = putSpace();
+    BOOST_CHECK_EQUAL(0, aryCount(space));
+
+    const oes::testing::eml::EmlObjMock& mock_hdf = oes::testing::eml::epc_ext_mock();
+    putMockObj(space, mock_hdf);
+    const EmlUri epc_uri = EmlUri::make_obj(
+        EmlUri::parse(space.m_uri).dataspace_, mock_hdf.type_, mock_hdf.guid_, EmlUri::eEML20
+    );
+    const std::string& epc_uri_str = epc_uri.to_string();
+
+    const int64_t MiB = 1024 * 1024;
+    // 40 MiB each, not a whole number of 1 MiB chunks so a back partial chunk exists.
+    const int64_t big_nu = 40 * (MiB / int64_t(sizeof(double))) - 5;
+    auto make_mock = [big_nu](const std::string& path, double offset) {
+        return EmlAryMock{
+            path,
+            { big_nu },
+            AnyArrayType::eArrayOfDouble, {},
+            [big_nu, offset](common12::Datatypes::AnyArray_item_v& any_ary) {
+                common12::Datatypes::ArrayOfDouble dbl_ary;
+                dbl_ary.m_values.resize(big_nu);
+                for (int64_t u = 0; u < big_nu; ++u) {
+                    dbl_ary.m_values[u] = offset + double(u);
+                }
+                any_ary = std::move(dbl_ary);
+            }
+        };
+    };
+    EmlAryMock big_a = make_mock("0 RESQML/uuid/big_a", 0.0);
+    EmlAryMock big_b = make_mock("1 RESQML/uuid/big_b", 1.0e9);
+
+    // Both arrays in ONE request: 80 MiB total > the 64 MiB bind cap.
+    auto put_rpc = makeRpc(&OpenKVDataArray::PutDataArrays);
+    for (const EmlAryMock* p_mock : { &big_a, &big_b }) {
+        data12::DataArrayTypes::PutDataArraysType ary;
+        ary.m_uid.m_uri = epc_uri_str;
+        ary.m_uid.m_pathInResource = p_mock->path_;
+        ary.m_array.m_dimensions = p_mock->dims_;
+        p_mock->init_(ary.m_array.m_data.m_item);
+        put_rpc.req_.m_dataArrays.emplace(p_mock->path_, std::move(ary));
+    }
+    if (!put_rpc.call() || hasError(put_rpc.rc_)) {
+        BOOST_REQUIRE_MESSAGE(false, errorOf(put_rpc.rc_));
+    }
+    BOOST_REQUIRE_EQUAL(2u, put_rpc.res_.m_success.size());
+
+    AryInfoVec arys = allAryMeta(space);
+    BOOST_REQUIRE_EQUAL(2u, arys.size());
+
+    for (const EmlAryMock* p_mock : { &big_a, &big_b }) {
+        const EmlAryMock& mock = *p_mock;
+        data12::DataArrayTypes::DataArrayIdentifier ident;
+        ident.m_uri = epc_uri_str;
+        ident.m_pathInResource = mock.path_;
+
+        auto get_rpc = makeRpc(&OpenKVDataArray::GetDataArrays);
+        get_rpc.req_.m_dataArrays.emplace(mock.path_, ident);
+        if (!get_rpc.call() || hasError(get_rpc.rc_)) {
+            BOOST_REQUIRE_MESSAGE(false, errorOf(get_rpc.rc_));
+        }
+        BOOST_REQUIRE_EQUAL(1u, get_rpc.res_.m_dataArrays.size());
+        const auto& ary = get_rpc.res_.m_dataArrays.begin()->second;
+        BOOST_CHECK(mock.equals(mock.path_, ary));
+
+        // Chunked read crosses the chunk rows that were split across flushes.
+        Datatypes::DataArrayTypes::DataArray ary2;
+        ary2.m_dimensions = ary.m_dimensions;
+        fillAryInChunks(ident, 7, ary2, ChunkOrder::eRandom);
+        BOOST_CHECK(mock.equals(mock.path_, ary2));
+    }
+}
+
 BOOST_AUTO_TEST_CASE(test_DataArray9_PutUninitializedDataArrays_1GB_plus) {
     /*
     ** Emulate the size of Volve's SGrid
@@ -1525,6 +1607,31 @@ BOOST_AUTO_TEST_CASE(test_DataArray9_PutDataArrays_missing_container_no_tx) {
         BOOST_REQUIRE_MESSAGE(false, errorOf(good_rpc.rc_));
     }
     BOOST_CHECK_EQUAL(1u, aryCount(space));
+}
+
+// A resource with the guid that is not an external part is not a container
+BOOST_AUTO_TEST_CASE(test_DataArray9_PutDataArrays_container_not_ext_part_no_tx) {
+    const auto space = putSpace();
+    const std::string dataspace = EmlUri::parse(space.m_uri).dataspace_;
+
+    const auto& crs = oes::testing::eml::crs_mock();
+    putMockObj(space, crs);
+    const auto& mock_hdf = oes::testing::eml::epc_ext_mock();
+    const EmlUri not_ext = EmlUri::make_obj(dataspace, mock_hdf.type_, crs.guid_, EmlUri::eEML20);
+
+    data12::DataArrayTypes::PutDataArraysType ary;
+    ary.m_uid.m_uri = not_ext.to_string();
+    ary.m_uid.m_pathInResource = "crs/1";
+    ary.m_array.m_dimensions = { 3 };
+    ArrayOfDouble values;
+    values.m_values.assign(3, 1.0);
+    ary.m_array.m_data.m_item = std::move(values);
+
+    auto put_rpc = makeRpc(&OpenKVDataArray::PutDataArrays);
+    put_rpc.req_.m_dataArrays.emplace("ary#1", ary);
+    put_rpc.call();
+    BOOST_CHECK(hasError(put_rpc.rc_));
+    BOOST_CHECK_EQUAL(0u, aryCount(space));
 }
 
 data12::DataArrayTypes::PutUninitializedDataArrayType make_uninit_ary(

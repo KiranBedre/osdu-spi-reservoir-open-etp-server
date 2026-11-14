@@ -241,7 +241,7 @@ void OpenKVTransProto::CommitTransaction(
                         OES_ERROR("Could not get writer for dataspace {}", space_uri);
                         continue;
                     }
-                    if(ctl.upsertActivityObjs(*writer, session->userName(), space_uri)) {
+                    if(ctl.upsertActivityObjs(*writer, session->userName(), space_uri, session->pg_bulk_size_, session->stable_import_activity_uuid_)) {
                         writer->delete_null_res();
                     }
                 }
@@ -255,6 +255,12 @@ void OpenKVTransProto::CommitTransaction(
             size_t missing_ref_count = 0;
             size_t orphan_rel_count = 0;
             std::vector<std::string> missing_containers;
+            // Collect missing-reference descriptions across all per-space writers
+            // so the 412 failure reason can echo actionable detail (capped)
+            // instead of the opaque count-only "N Missing reference(s)".
+            std::string joined;
+            size_t shown = 0;
+            constexpr size_t kMaxListed = 25;
             for (auto& [space_uid, w] : tx->spaceUid_spaceWriter_map_) {
                 // Each writer queries its own dataspace schema
                 Space space = repo_->findSpaceInfo(space_uid);
@@ -265,12 +271,19 @@ void OpenKVTransProto::CommitTransaction(
                 }
 
                 if (auto N = w->missing_reference_count()) {
-                    // List the missing references in error log
+                    // List the missing references in error log AND echo them in
+                    // the failure reason (capped) so the client receives detail.
                     const std::vector<ReferenceInfo>& missing_refs = w->get_references_infos();
                     for (const auto& ref : missing_refs) {
+                        const std::string s = ref.to_string();
                         OES_ERROR(
-                            "Missing reference in transaction: {}", ref.to_string()
+                            "Missing reference in transaction: {}", s
                         );
+                        if (shown < kMaxListed) {
+                            if (shown) joined += "; ";
+                            joined += s;
+                            ++shown;
+                        }
                     }
                     missing_ref_count += N;
                 }
@@ -283,7 +296,12 @@ void OpenKVTransProto::CommitTransaction(
 
             if (missing_ref_count) {
                 resp.m_successful = false;
-                resp.m_failureReason = fmt::format("{} Missing reference(s)", missing_ref_count);
+                if (missing_ref_count > shown) {
+                    joined += fmt::format("; ... (+{} more)", missing_ref_count - shown);
+                }
+                resp.m_failureReason = joined.empty()
+                    ? fmt::format("{} Missing reference(s)", missing_ref_count)
+                    : fmt::format("{} Missing reference(s): {}", missing_ref_count, joined);
                 rc.ok = true;
                 oes::core::MetricsHelper::updateCounterMetric(oes::core::metrics::TRANSACTION_OPS_COUNTER_COMMIT_ERROR);
                 return process_cb(std::move(rc), std::move(resp));
