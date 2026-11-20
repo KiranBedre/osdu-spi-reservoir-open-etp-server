@@ -85,6 +85,12 @@ public:
         const std::string& bearerToken, 
         EntitlementDataspaceGroups& dataspace,
         EntitlementError& err) const;
+    // found[i] tells whether the record of dataspaces_[i] was returned; false if the listing failed
+    bool getDataspaceRecordsBulk(
+        const std::string& bearerToken,
+        const EntitlementDataspaceGroupsBulk& dataspaces,
+        std::vector<bool>& found,
+        EntitlementError& err) const;
 
 private:
     class Impl;

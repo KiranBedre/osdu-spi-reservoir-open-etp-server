@@ -198,6 +198,82 @@ bool EntitlementDataspaceGroups::checkGroups(const std::set<std::string>& osduGr
     return true;
 }
 
+// GroupsBulk
+
+const size_t EntitlementDataspaceGroupsBulk::PAGE_SIZE = 100; // storage service maximum
+
+EntitlementDataspaceGroupsBulk::EntitlementDataspaceGroupsBulk() :
+    EntitlementDataspace(EntitlementDSType::eGroupsBulk) {}
+
+EntitlementDataspaceGroupsBulk::EntitlementDataspaceGroupsBulk(std::vector<EntitlementDataspaceGroups_ptr> dataspaces) :
+    EntitlementDataspace(EntitlementDSType::eGroupsBulk),
+    dataspaces_(std::move(dataspaces)) {}
+
+std::string EntitlementDataspaceGroupsBulk::idForQuery(const EntitlementConfigBase& /*config_osdu*/) const {
+    return "bulk";
+}
+
+std::string EntitlementDataspaceGroupsBulk::queryParams(
+    const EntitlementConfigBase& config_osdu, const std::string& cursor) const {
+    const std::string kind = config_osdu.schemaId() + ":wks:" +
+        EntitlementDataspaceGroups::DATASET_TYPE + ":" + EntitlementDataspaceGroups::VERSION;
+    std::string query = "?kind=" + oes::core::StringUtils::urlEncode(kind) + "&limit=" + std::to_string(PAGE_SIZE);
+    if (!cursor.empty()) {
+        query += "&cursor=" + oes::core::StringUtils::urlEncode(cursor);
+    }
+    return query;
+}
+
+std::unordered_map<std::string, size_t> EntitlementDataspaceGroupsBulk::indexById(
+    const EntitlementConfigBase& config_osdu) const {
+    std::unordered_map<std::string, size_t> index_by_id;
+    index_by_id.reserve(dataspaces_.size());
+    for (size_t i = 0; i < dataspaces_.size(); ++i) {
+        index_by_id.emplace(dataspaces_[i]->idForQuery(config_osdu), i);
+    }
+    return index_by_id;
+}
+
+bool EntitlementDataspaceGroupsBulk::deserialize(
+    const std::string& res_body,
+    const std::unordered_map<std::string, size_t>& index_by_id,
+    std::vector<bool>& found,
+    std::string& cursor) const {
+    cursor.clear();
+    try {
+        const nlohmann::json j = nlohmann::json::parse(res_body);
+        const auto& results = j.at("results");
+        if (!results.is_array()) {
+            throw OsduClientException("results is not an array.");
+        }
+        for (const auto& rec : results) {
+            const auto it_id = rec.find("id");
+            if (it_id == rec.end() || !it_id->is_string()) {
+                continue;
+            }
+            const auto it = index_by_id.find(it_id->get<std::string>());
+            if (it == index_by_id.end()) {
+                continue; // record of another dataspace
+            }
+            if (dataspaces_[it->second]->deserialize(rec.dump())) {
+                found[it->second] = true;
+            }
+        }
+        // Some storage versions still return a cursor on the last page
+        const auto it_cursor = j.find("cursor");
+        if (!results.empty() && it_cursor != j.end() && it_cursor->is_string()) {
+            cursor = it_cursor->get<std::string>();
+        }
+    } catch (const std::exception& ex) {
+        OES_ERROR("Failed to parse response body while listing dataspace records.\n{}", ex.what());
+        return false;
+    } catch (...) {
+        OES_ERROR("Failed to parse response body while listing dataspace records.");
+        return false;
+    }
+    return true;
+}
+
 // Policy
 
 const std::string EntitlementDataspacePolicy::DATASET_TYPE("dataset--ETPDataspace");

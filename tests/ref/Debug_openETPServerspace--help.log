@@ -20,9 +20,10 @@ Actions:
                                         into this one
   --import-epc arg                      Import (PUT) EPC file into ETP server
   --export-epc arg                      Export (GET) EPC file from ETP server
-  --copy                                Copy dataspace by reference OR from 
-                                        remote server. Must provide --by-ref 
-                                        XOR --from-remote
+  --copy                                Copy dataspace by reference, from a 
+                                        remote server, OR to a remote server.
+                                        Must provide one of --by-ref, 
+                                        --from-remote, --to-remote
 
 Options:
   -s [ --space-path ] arg               ETP dataspace path (folder/project)
@@ -74,14 +75,27 @@ Options:
                                         uploading arrays.
   --reconnect-retries arg (=-1)         Maximum number of reconnection retries 
                                         while uploading arrays
-  --by-ref                              Copy dataspace by reference
-  --from-remote                         Copy dataspace from remote server 
-                                        (--source-server) to the target server 
+  --by-ref                              Copy dataspace (--from-space) by 
+                                        reference to the dataspace 
+                                        (--space-path), both on the server 
                                         (--server-url)
-  --source-partition arg                Original data partition.
-  --source-space arg                    Original dataspace to be copied from.
-  --source-token arg                    Source remote server token
-  --source-server arg                   Source remote server
+  --from-space arg                      Dataspace copied from, on the same 
+                                        server (--by-ref).
+  --from-remote                         Copy dataspace (--remote-space) of the 
+                                        remote server (--remote-server) to the 
+                                        dataspace (--space-path) of the server 
+                                        (--server-url)
+  --to-remote                           Copy dataspace (--space-path) of the 
+                                        server (--server-url) to the dataspace 
+                                        (--remote-space) of the remote server 
+                                        (--remote-server).
+                                        The remote dataspace must exist and be 
+                                        empty
+  --remote-partition arg                Remote server data partition.
+  --remote-space arg                    Remote dataspace: copied from 
+                                        (--from-remote) or to (--to-remote).
+  --remote-token arg                    Remote server token
+  --remote-server arg                   Remote server
 
 Connect Options:
   -S [ --server-url ] arg               ETP 1.2 server URL

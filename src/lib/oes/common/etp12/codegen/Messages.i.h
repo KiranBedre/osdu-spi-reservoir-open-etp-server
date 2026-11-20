@@ -2,7 +2,7 @@
 // WARNING: DO NOT EDIT: SharedComponents/src/bin/etpgencpp Generated File
 
 // ============================================================================
-// Copyright 2018-2021 Emerson Paradigm Holding LLC. All rights reserved.
+// Copyright 2018-2026 Emerson Paradigm Holding LLC. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -3646,6 +3646,43 @@ struct OES_COMMON_EXPORT CopyDataspaceFromRemoteResponse final : AbstractMessage
 };
 using CopyDataspaceFromRemoteResponse_ptr = std::shared_ptr<CopyDataspaceFromRemoteResponse>;
 
+struct OES_COMMON_EXPORT CopyDataspaceToRemote final : AbstractMessage {
+    std::string m_action;
+    std::string m_dataspacePath;
+    Datatypes::Object::RemoteServer m_targetServer;
+    std::map<std::string, std::string> m_extraData;
+    std::vector<Datatypes::Object::TableData> m_tableData;
+
+    CopyDataspaceToRemote();
+
+    static avro::ValidSchema schema();
+    void encode(avro::Encoder&) const override;
+    void decode(avro::Decoder&) override;
+
+    OES_COMMON_ETP12_MESSAGE(
+        SinglePart, Misc, Request,
+        DataspaceOSDU,(2424), CopyDataspaceToRemote,(11)
+    );
+};
+using CopyDataspaceToRemote_ptr = std::shared_ptr<CopyDataspaceToRemote>;
+
+struct OES_COMMON_EXPORT CopyDataspaceToRemoteResponse final : AbstractMessage {
+    std::vector<Datatypes::Object::TableData> m_tableData;
+
+    CopyDataspaceToRemoteResponse();
+
+    static avro::ValidSchema schema();
+    void encode(avro::Encoder&) const override;
+    void decode(avro::Decoder&) override;
+    auto& range() { return m_tableData; }
+
+    OES_COMMON_ETP12_MESSAGE(
+        MultiPart, Misc, Response,
+        DataspaceOSDU,(2424), CopyDataspaceToRemoteResponse,(12)
+    );
+};
+using CopyDataspaceToRemoteResponse_ptr = std::shared_ptr<CopyDataspaceToRemoteResponse>;
+
 struct OES_COMMON_EXPORT GetDataspaceInfoResponse final : AbstractMessage {
     std::map<std::string, Datatypes::Object::Dataspace> m_dataspaces;
 
@@ -4081,6 +4118,10 @@ constexpr const MsgInfo* MsgInfo::lookup(int proto, int type) {
             &Protocol::DataspaceOSDU::CopyDataspaceFromRemote::info;
         case Protocol::DataspaceOSDU::CopyDataspaceFromRemoteResponse::info.type_.type_: return // 10
             &Protocol::DataspaceOSDU::CopyDataspaceFromRemoteResponse::info;
+        case Protocol::DataspaceOSDU::CopyDataspaceToRemote::info.type_.type_: return // 11
+            &Protocol::DataspaceOSDU::CopyDataspaceToRemote::info;
+        case Protocol::DataspaceOSDU::CopyDataspaceToRemoteResponse::info.type_.type_: return // 12
+            &Protocol::DataspaceOSDU::CopyDataspaceToRemoteResponse::info;
         default:
             break;
         }
@@ -4093,3 +4134,4 @@ constexpr const MsgInfo* MsgInfo::lookup(int proto, int type) {
 }
 
 } //      oes::common::etp12
+

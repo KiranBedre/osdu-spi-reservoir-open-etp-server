@@ -61,6 +61,11 @@ struct OES_EML_EXPORT OpenKVDataspaceOSDU : BaseProto, oes::common::etp12::Proto
         EtpResponseHandler<CopyDataspaceFromRemote_res_t> process_cb // messageTypeId 10
     ) final;
 
+    virtual void CopyDataspaceToRemote( // messageTypeId 11
+        IRequest& ireq, CopyDataspaceToRemote_req_t req,
+        EtpResponseHandler<CopyDataspaceToRemote_res_t> process_cb // messageTypeId 12
+    ) final;
+
 protected:
     void CopyDataspaceFromRemote_trigger(
         CopyDataspaceFromRemote_req_t req,
@@ -71,6 +76,30 @@ protected:
         CopyDataspaceFromRemote_req_t req,
         EtpResponseHandler<CopyDataspaceFromRemote_res_t> process_cb
     );
+
+    void CopyDataspaceToRemote_trigger(
+        CopyDataspaceToRemote_req_t req,
+        EtpResponseHandler<CopyDataspaceToRemote_res_t> process_cb
+    );
+
+    void CopyDataspaceToRemote_prepare(
+        CopyDataspaceToRemote_req_t req,
+        EtpResponseHandler<CopyDataspaceToRemote_res_t> process_cb
+    );
+
+    void CopyDataspaceToRemote_put(
+        CopyDataspaceToRemote_req_t req,
+        EtpResponseHandler<CopyDataspaceToRemote_res_t> process_cb
+    );
+
+    void CopyDataspaceToRemote_commit(
+        CopyDataspaceToRemote_req_t req,
+        EtpResponseHandler<CopyDataspaceToRemote_res_t> process_cb
+    );
+
+    void CopyDataspaceToRemote_abort(const std::string& reason);
+
+    bool restoreTargetXData(const Space& target_space);
 
     friend LocalTransactionWriteRaii<OpenKVDataspaceOSDU>;
 };

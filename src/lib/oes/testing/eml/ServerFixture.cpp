@@ -84,6 +84,7 @@ OpenKVServerFixture::OpenKVServerFixture()
     sess->set_negotiated_max_msg_size(1ull<<31); // i.e. 2GB
     session_ = sess;
     session_->check_activities_ = false;
+    session_->stable_import_activity_uuid_ = false;
     session_->pg_bulk_size_ = 100;
 
     BOOST_REQUIRE_EQUAL(0, spaceCount());

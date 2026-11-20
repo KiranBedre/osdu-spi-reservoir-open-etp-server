@@ -222,6 +222,7 @@ void OpenKVClientServerFixture::startServer(uint32_t totalThreadCount, int maxCo
         svr_conf_.max_mgs_usize_ = 64'000'000; // 64 MB
     }
 
+    configureServer();
     svr_ = new etp12::Server(svr_conf_);
     etp::Datatypes::ServerCapabilities svr_info = svr_->getServerInfo();
     BOOST_REQUIRE_EQUAL(svr_info.m_applicationName.find("ReservoirDDMS"), 0);
@@ -244,6 +245,9 @@ void OpenKVClientServerFixture::startServer(uint32_t totalThreadCount, int maxCo
 
     auto& conf = initClientConfig();
     BOOST_REQUIRE_EQUAL(&conf, &clt_conf_);
+}
+
+void OpenKVClientServerFixture::configureServer() {
 }
 
 void OpenKVClientServerFixture::stopServer() {

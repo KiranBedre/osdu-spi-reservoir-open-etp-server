@@ -15,6 +15,7 @@
 // ============================================================================
 
 #include <algorithm>
+#include <optional>
 #include <sstream>
 
 #include <oes/core/utils/config_enter_3rdparty.h>
@@ -52,6 +53,7 @@
 
 #include <oes/postgresql/Transaction.h>
 #include <oes/postgresql/Format.hpp>
+#include <oes/postgresql/PhysicalName.h>
 
 
 using namespace oes::eml::etp12::Datatypes;
@@ -308,6 +310,7 @@ void OpenKVDataspaceOSDU::CopyDataspacesContent( // messageTypeId 3
         ErrorInfo s_err;
         if(!checkDataspaceAccess(space, AccessType::CAN_READ, s_err)){
             reply.addError(sp.first, s_err);
+            continue;
         }
         if(!repo_->getAdminDb()->spaceIsReadOnly(space)){
             ErrorInfo err;
@@ -575,6 +578,7 @@ void OpenKVDataspaceOSDU::CopyToDataspace( // messageTypeId 7
         if(!rel_id){
             rel_id = repo_->getAdminDb()->createSpaceReference(target_space,space);
         }
+        std::vector<TypedUid> new_uids;
         for (const Entry* nk : nks) {
             reply.addMapPart(nk->first, "true");
             // Look if the info is already in the map
@@ -594,11 +598,12 @@ void OpenKVDataspaceOSDU::CopyToDataspace( // messageTypeId 7
                     }
                     all_refs.push_back(ref);
                     all_ids.insert(ref_uid);
+                    new_uids.push_back(ref_uid);
                 }
-                std::vector<ReferenceRel> rels = reader.get_relations(ref_uid);
-                all_rels.insert(all_rels.end(), rels.begin(), rels.end());
             }
         }
+        std::vector<ReferenceRel> rels = reader.get_relations(new_uids, session->pg_bulk_size_);
+        all_rels.insert(all_rels.end(), rels.begin(), rels.end());
     }
 
     Connection_ptr dest_space_db = repo_->getSpaceConnection(target_space, w_err);
@@ -610,7 +615,7 @@ void OpenKVDataspaceOSDU::CopyToDataspace( // messageTypeId 7
 
     SpaceWriter writer(dest_space_db);
     std::vector<int64_t> ids = writer.insert_references(all_refs);
-    writer.insert_relations(all_rels);
+    writer.insert_relations(all_rels, session->pg_bulk_size_);
 
     repo_->updateSpaceInfo(target_space);
     
@@ -618,6 +623,54 @@ void OpenKVDataspaceOSDU::CopyToDataspace( // messageTypeId 7
 } catch (...) {
     etp12::handleException(process_cb);
 }
+
+namespace {
+
+//! How a source streams its space for a target at a given schema version
+struct StreamAt {
+    std::string version; // sent in the "schema" pseudo-table; empty for a target before the version exchange
+    int project_to = 0;  // positive to leave out the columns added after that version
+};
+
+/*!
+ * \brief A newer target takes its empty space down to the source's version; an older one gets
+ * the space projected to its own
+ * \param exchange false for a target before the version exchange, at 15 and sending no version
+ * \param error set when the space cannot be streamed for that target
+*/
+std::optional<StreamAt> streamVersionFor(
+    const Connection_ptr& conn, const Space& source_space,
+    const std::string& source_version, const std::string& target_version,
+    bool exchange, std::string& error
+) {
+    const int target_number = schemaVersionNumber(target_version);
+    const int source_number = schemaVersionNumber(source_version);
+    if (target_number < 0) {
+        error = fmt::format(
+            "Source dataspace {}: the target sent an unknown schema version {}", source_space.path_, target_version
+        );
+        return std::nullopt;
+    }
+    const bool project = source_number > target_number;
+    if (project) {
+        try {
+            check_space_projection(conn, source_space.dbfile_, source_number, target_number);
+        } catch (const std::exception& e) {
+            error = fmt::format(
+                "Source dataspace {} at schema {} cannot be copied to a target at {}{}: {}",
+                source_space.path_, source_number, target_number,
+                exchange ? "" : " (the target sent no schema version)", e.what()
+            );
+            return std::nullopt;
+        }
+    }
+    return StreamAt{
+        exchange ? (project ? target_version : source_version) : std::string(),
+        project ? target_number : 0
+    };
+}
+
+} // namespace
 
 /*!
  * \brief Setup a client to a source server and receive tables binary data
@@ -677,6 +730,17 @@ void OpenKVDataspaceOSDU::CopyDataspaceFromRemote_trigger(
         return reply.fatalError(EAUTHORIZATION_REQUIRED, err.m_message);
     }
 
+    // A new target space is at its binary's latest version, and the copy keeps the source ids
+    const Connection_ptr target_conn = repo_->getSpaceConnection(target_space, err);
+    if (!target_conn) {
+        return reply.fatalError(EINVALID_STATE, err.m_message);
+    }
+    const oes::postgresql::relational::PhysicalName target_phys(target_space.dbfile_, oes::postgresql::relational::IMPLICIT_LOWERCASE);
+    if (target_conn->executeInt64(fmt::format("SELECT count(*) FROM (SELECT 1 FROM {}.res LIMIT 1) AS r", target_phys.quotedName())) > 0) {
+        return reply.fatalError(EINVALID_STATE, fmt::format("Target dataspace {} is not empty", target_space.path_));
+    }
+    const std::string target_version = spaceSchemaVersion(target_conn, target_space.dbfile_);
+
     // New client to connect to source server
     oes::client::ClientConfig cfg;
     cfg.server_url_ = req.m_sourceServer.m_sourceServer;
@@ -684,7 +748,8 @@ void OpenKVDataspaceOSDU::CopyDataspaceFromRemote_trigger(
     cfg.data_partition_id_hdr_ = req.m_sourceServer.m_sourcePartition;
     cfg.max_mgs_size_ = session->negotiated_max_msg_size();
     cfg.requested_protocols_.assign({
-        oes::client::data12::Protocol::eDataspaceOSDU
+        oes::client::data12::Protocol::eDataspaceOSDU,
+        oes::client::data12::Protocol::eSupportedTypes
     });
 
     auto timeout = std::chrono::milliseconds(10000);
@@ -697,8 +762,9 @@ void OpenKVDataspaceOSDU::CopyDataspaceFromRemote_trigger(
     err.m_message.clear();
     err.m_code = 0;
     if (!client->connect(timeout, &err)) {
-        std::string msg = fmt::format("Failed to connect to source server: {} # {}: {}", cfg.server_url_, err.m_code, err.m_message);
-        return reply.fatalError(EINVALID_ARGUMENT, msg);
+        OES_ERROR("CopyDataspaceFromRemote failed to connect to source server, code {}: {}",
+            err.m_code, err.m_message);
+        return reply.fatalError(EINVALID_ARGUMENT, "Failed to connect to source server");
     }
 
     auto* proto = client->space_osdu_proto();
@@ -706,9 +772,25 @@ void OpenKVDataspaceOSDU::CopyDataspaceFromRemote_trigger(
         return reply.fatalError(EINVALID_ARGUMENT, "Can not get space_osdu_proto");
     }
 
+    // A server before the version exchange dumps a space as it finds it: opening it first upgrades it to 15
+    auto* types_proto = client->types_proto();
+    if (!types_proto) {
+        return reply.fatalError(EINVALID_ARGUMENT, "The source server does not support protocol 25 (SupportedTypes)");
+    }
+    auto types_rpc = oes::client::rpcFor(types_proto, &oes::client::proto12::ISupportedTypes::GetSupportedTypes);
+    types_rpc.req_.m_uri = EmlUri::make_space(req.m_sourceServer.m_sourceDataspacePath).to_string();
+    types_rpc.req_.m_scope = oes::client::data12::Object::ContextScopeKind::eSelf;
+    types_rpc.req_.m_countObjects = false;
+    types_rpc.req_.m_returnEmptyTypes = false;
+    std::ostringstream types_err;
+    if (!types_rpc.callForEachValue(types_err, timeout, [](auto&) {})) {
+        return reply.fatalError(EINVALID_ARGUMENT, "Cannot open the source dataspace: " + types_err.str());
+    }
+
     auto rpc = oes::client::rpcFor(proto, &oes::client::proto12::IDataspaceOSDU::CopyDataspaceFromRemote);
     rpc.req_.m_dataspacePath = req.m_sourceServer.m_sourceDataspacePath;
     rpc.req_.m_action = "dump";
+    rpc.req_.m_extraData["schema_version"] = target_version;
 
     // start local transaction
     std::vector<EmlUri> txSpaceUris;
@@ -733,10 +815,7 @@ void OpenKVDataspaceOSDU::CopyDataspaceFromRemote_trigger(
         );
     }
     
-    // The incoming stream overwrites the target xdata with the source one
-    const oes::eml::etp12::XDataMap target_xdata = target_space.xdataAsMap();
-
-    PGConsumer pg_consumer(target_space, repo_->getDbConnection());
+    PGConsumer pg_consumer(target_space, repo_->getDbConnection(), target_version);
     
     std::ostringstream oss_err;
     if (!rpc.callForEachValue(
@@ -748,7 +827,7 @@ void OpenKVDataspaceOSDU::CopyDataspaceFromRemote_trigger(
                 auto st = pg_consumer.consume(entry); //TODO cancel on failed
                 
                 if (st == SpaceStreamStatus::eFailed) {
-                    throw std::runtime_error("Dataspace stream failed");
+                    throw std::runtime_error("Dataspace stream failed: " + pg_consumer.error());
                 }
 
                 if (hasTableStreamStatus(entry.m_tableStatus, SpaceTableStreamStatus::eDone)) {
@@ -763,34 +842,19 @@ void OpenKVDataspaceOSDU::CopyDataspaceFromRemote_trigger(
             }
         })) {
         OES_ERROR("Error receiving table binary data");
-        return reply.fatalError(EINVALID_ARGUMENT, "Error receiving table binary data");
+        return reply.fatalError(EINVALID_ARGUMENT, "Error receiving table binary data: " + oss_err.str());
+    }
+    // A copy from an older source is at the source's version: upgrade it like any space
+    if (!repo_->getSpaceConnection(target_space, err)) {
+        return reply.fatalError(EINVALID_STATE, "Cannot upgrade the copy: " + err.m_message);
+    }
+    if (!pg_consumer.finish()) {
+        return reply.fatalError(EINVALID_STATE, pg_consumer.error());
     }
     local_tx.commit();
 
-    // Read from the admin table, not from the session cache, to get the xdata written by the stream
-    Space merged_space = repo_->getAdminDb()->findSpace(target_space.uid_);
-    if (!merged_space.isValid()) {
-        return reply.fatalError(ENOT_FOUND, "Target space not found after copy");
-    }
-    oes::eml::etp12::XDataMap merged_xdata = merged_space.xdataAsMap();
-    // The original target entries win over the dumped ones
-    for (const auto& [key, value] : target_xdata) {
-        merged_xdata.insert_or_assign(key, value);
-    }
-    merged_space.setXDdataFromMap(merged_xdata);
-    if (!repo_->getAdminDb()->updateSpaceXDataJson(merged_space)) {
-        return reply.fatalError(EINVALID_STATE, "Failed to update the target space meta-data");
-    }
-
-    // Also update the session cache.
-    session = session_.lock().get();
-    if (session == nullptr) {
-        OES_ERROR("SVR Thread({}): Session has been forcefully terminated.", oes::core::thisThreadId());
+    if (!restoreTargetXData(target_space)) {
         return;
-    }
-    const auto cached_space = session->etp_space_by_path_.find(merged_space.path_);
-    if (cached_space != session->etp_space_by_path_.end()) {
-        cached_space->second.xdata_json_ = merged_space.xdata_json_;
     }
 
     // oes::client::proto12::DataspaceOSDU::CopyDataspaceFromRemoteResponse final;
@@ -868,7 +932,29 @@ void OpenKVDataspaceOSDU::CopyDataspaceFromRemote_dump(
     if (max_msg_size < 1'000'000) {
         return reply.fatalError(EINVALID_ARGUMENT, "Max messagem size too small");
     }
-    PGStreamer pg_streamer(source_space, repo_->getDbConnection(), has_ref, session->negotiated_max_msg_size());
+
+    // Dump at the binary's latest version, never at whatever version the space was left
+    if (!repo_->getSpaceConnection(source_space, err)) {
+        return reply.fatalError(EINVALID_STATE, err.m_message);
+    }
+    const std::string source_version = spaceSchemaVersion(repo_->getDbConnection(), source_space.dbfile_);
+
+    // A target that sends no version is a server before the version exchange, i.e. at 15
+    const auto requested = req.m_extraData.find("schema_version");
+    const bool exchange = requested != req.m_extraData.end();
+    int magic_cookie = 0;
+    space_schema_versions(magic_cookie);
+    const std::string target_version = exchange ? requested->second : fmt::format("{}:15", magic_cookie);
+    std::string error;
+    const auto stream_at = streamVersionFor(repo_->getDbConnection(), source_space, source_version, target_version, exchange, error);
+    if (!stream_at) {
+        return reply.fatalError(EINVALID_STATE, error);
+    }
+
+    PGStreamer pg_streamer(
+        source_space, repo_->getDbConnection(), has_ref, session->negotiated_max_msg_size(),
+        stream_at->version, stream_at->project_to
+    );
     
     SpaceStreamStatus status = SpaceStreamStatus::eOngoing;
     while ( status == SpaceStreamStatus::eOngoing) {
@@ -917,6 +1003,572 @@ void OpenKVDataspaceOSDU::CopyDataspaceFromRemote( // messageTypeId 9
     }
     
     return process_cb(errorStatus(EINVALID_ARGUMENT, "requested action must be trigger or dump"), {});
+
+} catch (...) {
+    etp12::handleException(process_cb);
+}
+
+/*!
+ * \brief Puts the target's own xdata back over the one a copy stream wrote with the source's
+ * \param target_space the target space as read before the copy
+ * \return false if the session is gone
+ * \throws EtpResponseStatus if the admin table cannot be read or updated
+*/
+bool OpenKVDataspaceOSDU::restoreTargetXData(const Space& target_space) {
+    // Read from the admin table, not from the session cache, to get the xdata written by the stream
+    Space merged_space = repo_->getAdminDb()->findSpace(target_space.uid_);
+    if (!merged_space.isValid()) {
+        throw errorStatus(ENOT_FOUND, "Target space not found after copy");
+    }
+    oes::eml::etp12::XDataMap merged_xdata = merged_space.xdataAsMap();
+    // The original target entries win over the copied ones
+    for (const auto& [key, value] : target_space.xdataAsMap()) {
+        merged_xdata.insert_or_assign(key, value);
+    }
+    merged_space.setXDdataFromMap(merged_xdata);
+    if (!repo_->getAdminDb()->updateSpaceXDataJson(merged_space)) {
+        throw errorStatus(EINVALID_STATE, "Failed to update the target space meta-data");
+    }
+
+    // Also update the session cache.
+    const std::shared_ptr<OpenKVSession> session = session_.lock();
+    if (session == nullptr) {
+        OES_ERROR("SVR Thread({}): Session has been forcefully terminated.", oes::core::thisThreadId());
+        return false;
+    }
+    const auto cached_space = session->etp_space_by_path_.find(merged_space.path_);
+    if (cached_space != session->etp_space_by_path_.end()) {
+        cached_space->second.xdata_json_ = merged_space.xdata_json_;
+    }
+    return true;
+}
+
+/*!
+ * \brief A dataspace being pushed into this server, kept on the session from "prepare" to "commit".
+ * The session transaction reserves the DB connection across the requests, and a table COPY stays
+ * open on it between two "put": nothing but the consumer may use that connection until "commit".
+*/
+struct DataspaceIngest {
+    std::string path; // as requested by "prepare"
+    Space space;      // as read before the copy, with the target's own xdata
+    Guid tx_uid;
+    std::unique_ptr<PGConsumer> consumer; // refers to space
+    bool stream_done = false;
+};
+
+/*!
+ * \brief Rolls back the push into this server, if any
+ * \param reason logged, and given to an open COPY
+*/
+void OpenKVDataspaceOSDU::CopyDataspaceToRemote_abort(const std::string& reason) {
+    const std::shared_ptr<OpenKVSession> session = session_.lock();
+    if (session == nullptr || !session->space_ingest_) {
+        return;
+    }
+    const std::shared_ptr<DataspaceIngest> ingest = std::move(session->space_ingest_);
+    session->space_ingest_.reset();
+    OES_ERROR(
+        "[{}] SVR Thread({}) Session({}) DataspaceOSDU(2424).CopyDataspaceToRemote(11): copy into dataspace {} rolled back: {}",
+        session->client_identification_, oes::core::thisThreadId(), session->id(), ingest->path, reason
+    );
+
+    const bool own_tx = session->tx_ && session->tx_->uid_ == ingest->tx_uid;
+    try {
+        if (ingest->consumer) {
+            ingest->consumer->abort(reason);
+        }
+        if (own_tx) {
+            session->tx_->db_transaction_.rollback();
+        }
+    } catch (const std::exception& e) {
+        OES_ERROR("Dataspace {}: cannot roll back the copy: {}", ingest->path, e.what());
+    }
+    if (own_tx) {
+        resetTx();
+    }
+}
+
+/*!
+ * \brief Target side of a push: checks the target space and opens the transaction the copy goes in.
+ * Replies the target's schema version as a "schema" part, for the source to project its space to.
+ * \param req ETP request
+ * \param process_cb ETP response callback
+*/
+void OpenKVDataspaceOSDU::CopyDataspaceToRemote_prepare(
+    CopyDataspaceToRemote_req_t req,
+    EtpResponseHandler<CopyDataspaceToRemote_res_t> process_cb
+) try {
+    const std::shared_ptr<OpenKVSession> session = session_.lock();
+    if (session == nullptr) {
+        OES_ERROR("SVR Thread({}): Session has been forcefully terminated.", oes::core::thisThreadId());
+        return;
+    }
+
+    oes::eml::etp12::MultiPartReply reply(*session, process_cb);
+
+    // Authorization (1 from 2)
+    if (session->entitlement_ && session->entitlement_->isValid()) {
+        if (!session->entitlement_->hasServicePermissionUpdate()) {
+            OES_ERROR(
+                "User {} has no permissions to modify dataspace content",
+                session->userMail()
+            );
+            return reply.fatalError(EREQUEST_DENIED, "Not authorized to modify dataspace");
+        }
+    } else if (session->entitlement_) {
+        return reply.fatalError(EAUTHORIZATION_REQUIRED, "Invalid entitlement.");
+    }
+    if (session->user_ && session->user_->read_only_) {
+        return reply.fatalError(EREQUEST_DENIED, "Read-only User");
+    }
+
+    if (session->space_ingest_ || session->tx_) {
+        return reply.fatalError(EMAX_TRANSACTIONS_EXCEEDED, "A dataspace copy or a transaction is already active in this session");
+    }
+
+    auto target_space = repo_->findSpaceInfo(req.m_dataspacePath);
+    if (!target_space.isValid()) {
+        return reply.fatalError(ENOT_FOUND, "Target space not found or invalid");
+    }
+
+    ErrorInfo err;
+    // Authorization (2 from 2)
+    if (!checkDataspaceAccess(target_space, AccessType::CAN_WRITE, err)) {
+        OES_ERROR(
+            "[{}] SVR Thread({}) Session({}) DataspaceOSDU(2424).CopyDataspaceToRemote_prepare(11): User {} has no permissions to update dataspace {} {}",
+            session->client_identification_,
+            oes::core::thisThreadId(),
+            session->id(),
+            session->userMail(),
+            target_space.path_,
+            target_space.uid_
+        );
+        return reply.fatalError(EAUTHORIZATION_REQUIRED, err.m_message);
+    }
+
+    // A new target space is at its binary's latest version, and the copy keeps the source ids
+    const Connection_ptr target_conn = repo_->getSpaceConnection(target_space, err);
+    if (!target_conn) {
+        return reply.fatalError(EINVALID_STATE, err.m_message);
+    }
+    const oes::postgresql::relational::PhysicalName target_phys(target_space.dbfile_, oes::postgresql::relational::IMPLICIT_LOWERCASE);
+    if (target_conn->executeInt64(fmt::format("SELECT count(*) FROM (SELECT 1 FROM {}.res LIMIT 1) AS r", target_phys.quotedName())) > 0) {
+        return reply.fatalError(EINVALID_STATE, fmt::format("Target dataspace {} is not empty", target_space.path_));
+    }
+    const std::string target_version = spaceSchemaVersion(target_conn, target_space.dbfile_);
+
+    // Like a StartTransaction one, the transaction outlives this request, up to "commit"
+    const EmlUri tx_space_uri = EmlUri::make_space(target_space.uid_);
+    {
+        std::lock_guard<std::mutex> lock(OpenKVTransProto::start_mutex_);
+        if (!OpenKVTransaction::dataspaceWriteable(tx_space_uri.to_string())) {
+            return reply.fatalError(EMAX_TRANSACTIONS_EXCEEDED, fmt::format(
+                "Target dataspace {} is being written by another transaction", target_space.path_
+            ));
+        }
+        newTx(false, target_space.uid_, {tx_space_uri}, true);
+    }
+
+    auto ingest = std::make_shared<DataspaceIngest>();
+    ingest->path = req.m_dataspacePath;
+    ingest->space = std::move(target_space);
+    ingest->tx_uid = session->tx_->uid_;
+    session->space_ingest_ = ingest;
+    ingest->consumer = std::make_unique<PGConsumer>(ingest->space, repo_->getDbConnection(), target_version);
+
+    OES_INFO(
+        "[{}] SVR Thread({}) Session({}) DataspaceOSDU(2424).CopyDataspaceToRemote(11): receiving dataspace {} at schema {}",
+        session->client_identification_, oes::core::thisThreadId(), session->id(), ingest->path, target_version
+    );
+
+    TableData& td = reply.addVecPart();
+    td.m_tableName = "schema";
+    td.m_tableData.assign(target_version.begin(), target_version.end());
+    td.m_copyStatus = static_cast<uint8_t>(SpaceStreamStatus::eOngoing);
+
+    reply.finalProcess();
+} catch (...) {
+    CopyDataspaceToRemote_abort("failed to prepare the copy");
+    etp12::handleException(process_cb);
+}
+
+/*!
+ * \brief Target side of a push: loads the next tables binary data, as streamed by the source.
+ * Replies a part per table done.
+ * \param req ETP request
+ * \param process_cb ETP response callback
+*/
+void OpenKVDataspaceOSDU::CopyDataspaceToRemote_put(
+    CopyDataspaceToRemote_req_t req,
+    EtpResponseHandler<CopyDataspaceToRemote_res_t> process_cb
+) try {
+    const std::shared_ptr<OpenKVSession> session = session_.lock();
+    if (session == nullptr) {
+        OES_ERROR("SVR Thread({}): Session has been forcefully terminated.", oes::core::thisThreadId());
+        return;
+    }
+
+    oes::eml::etp12::MultiPartReply reply(*session, process_cb);
+
+    // Authorized by "prepare". No SQL here but the consumer's: a COPY may be open on the connection.
+    const std::shared_ptr<DataspaceIngest> ingest = session->space_ingest_;
+    if (!ingest || ingest->path != req.m_dataspacePath) {
+        return reply.fatalError(EINVALID_STATE, fmt::format("No copy into dataspace {} was prepared in this session", req.m_dataspacePath));
+    }
+    if (!session->tx_ || session->tx_->uid_ != ingest->tx_uid) {
+        CopyDataspaceToRemote_abort("the transaction of the copy is gone");
+        return reply.fatalError(EINVALID_STATE, "The transaction of the copy is gone");
+    }
+
+    for (TableData& entry : req.m_tableData) {
+        if (ingest->stream_done) {
+            CopyDataspaceToRemote_abort("data after the end of the dataspace");
+            return reply.fatalError(EINVALID_ARGUMENT, "Received data after the end of the dataspace");
+        }
+
+        const auto st = ingest->consumer->consume(entry);
+        if (st == SpaceStreamStatus::eFailed) {
+            const std::string msg = ingest->consumer->error();
+            CopyDataspaceToRemote_abort(msg);
+            return reply.fatalError(EINVALID_STATE, "Dataspace stream failed: " + msg);
+        }
+        if (st == SpaceStreamStatus::eDone) {
+            ingest->stream_done = true;
+        }
+
+        if (hasTableStreamStatus(entry.m_tableStatus, SpaceTableStreamStatus::eDone)) {
+            const size_t next_bytes = 2 + entry.m_tableName.size();
+            reply.maybeProcess(next_bytes, false);
+
+            TableData& td = reply.addVecPart();
+            td.m_copyStatus = entry.m_copyStatus;
+            td.m_tableName = entry.m_tableName;
+
+            reply.addBytes(next_bytes);
+        }
+    }
+
+    reply.finalProcess();
+} catch (...) {
+    CopyDataspaceToRemote_abort("failed to load the tables data");
+    etp12::handleException(process_cb);
+}
+
+/*!
+ * \brief Target side of a push: upgrades the copy if it came from an older source, resets the
+ * sequences, commits, and puts the target's own xdata back
+ * \param req ETP request
+ * \param process_cb ETP response callback
+*/
+void OpenKVDataspaceOSDU::CopyDataspaceToRemote_commit(
+    CopyDataspaceToRemote_req_t req,
+    EtpResponseHandler<CopyDataspaceToRemote_res_t> process_cb
+) try {
+    const std::shared_ptr<OpenKVSession> session = session_.lock();
+    if (session == nullptr) {
+        OES_ERROR("SVR Thread({}): Session has been forcefully terminated.", oes::core::thisThreadId());
+        return;
+    }
+
+    oes::eml::etp12::MultiPartReply reply(*session, process_cb);
+
+    const std::shared_ptr<DataspaceIngest> ingest = session->space_ingest_;
+    if (!ingest || ingest->path != req.m_dataspacePath) {
+        return reply.fatalError(EINVALID_STATE, fmt::format("No copy into dataspace {} was prepared in this session", req.m_dataspacePath));
+    }
+    if (!session->tx_ || session->tx_->uid_ != ingest->tx_uid) {
+        CopyDataspaceToRemote_abort("the transaction of the copy is gone");
+        return reply.fatalError(EINVALID_STATE, "The transaction of the copy is gone");
+    }
+    if (!ingest->stream_done) {
+        CopyDataspaceToRemote_abort("commit before the end of the dataspace");
+        return reply.fatalError(EINVALID_STATE, "The dataspace stream did not reach its end");
+    }
+
+    // A copy from an older source is at the source's version: upgrade it like any space
+    ErrorInfo err;
+    if (!repo_->getSpaceConnection(ingest->space, err)) {
+        CopyDataspaceToRemote_abort("cannot upgrade the copy");
+        return reply.fatalError(EINVALID_STATE, "Cannot upgrade the copy: " + err.m_message);
+    }
+    if (!ingest->consumer->finish()) {
+        const std::string msg = ingest->consumer->error();
+        CopyDataspaceToRemote_abort(msg);
+        return reply.fatalError(EINVALID_STATE, msg);
+    }
+    session->tx_->db_transaction_.commit();
+    resetTx();
+    session->space_ingest_.reset();
+
+    OES_INFO(
+        "[{}] SVR Thread({}) Session({}) DataspaceOSDU(2424).CopyDataspaceToRemote(11): received dataspace {}",
+        session->client_identification_, oes::core::thisThreadId(), session->id(), ingest->path
+    );
+
+    if (!restoreTargetXData(ingest->space)) {
+        return;
+    }
+
+    reply.finalProcess();
+} catch (...) {
+    CopyDataspaceToRemote_abort("failed to commit the copy");
+    etp12::handleException(process_cb);
+}
+
+/*!
+ * \brief Source side of a push: connects to the target server and streams the space into it,
+ * with "prepare", then "put" requests within the target's max message size, then "commit".
+ * Relays a part per table done on the target.
+ * \param req ETP request
+ * \param process_cb ETP response callback
+*/
+void OpenKVDataspaceOSDU::CopyDataspaceToRemote_trigger(
+    CopyDataspaceToRemote_req_t req,
+    EtpResponseHandler<CopyDataspaceToRemote_res_t> process_cb
+) try {
+    const std::shared_ptr<OpenKVSession> session = session_.lock();
+    if (session == nullptr) {
+        OES_ERROR("SVR Thread({}): Session has been forcefully terminated.", oes::core::thisThreadId());
+        return;
+    }
+
+    oes::eml::etp12::MultiPartReply reply(*session, process_cb);
+
+    // Authorization (1 from 2)
+    if (session->entitlement_ && session->entitlement_->isValid()) {
+        if (!session->entitlement_->hasServicePermissionRead()) {
+            OES_ERROR(
+                "User {} has no permissions to read dataspace content",
+                session->userMail()
+            );
+            return reply.fatalError(EREQUEST_DENIED, "Not authorized to copy to another server");
+        }
+    } else if (session->entitlement_) {
+        return reply.fatalError(EAUTHORIZATION_REQUIRED, "Invalid entitlement.");
+    }
+
+    auto source_space = repo_->findSpaceInfo(req.m_dataspacePath);
+    if (!source_space.isValid()) {
+        return reply.fatalError(ENOT_FOUND, "Space not found or invalid");
+    }
+    const auto has_ref = repo_->getAdminDb()->spaceIncludesReference(source_space);
+
+    ErrorInfo err;
+    // Authorization (2 from 2)
+    if (!checkDataspaceAccess(source_space, AccessType::CAN_READ, err)) {
+        OES_ERROR(
+            "[{}] SVR Thread({}) Session({}) DataspaceOSDU(2424).CopyDataspaceToRemote_trigger(11): User {} has no permissions to read dataspace {} {}",
+            session->client_identification_,
+            oes::core::thisThreadId(),
+            session->id(),
+            session->userMail(),
+            source_space.path_,
+            source_space.uid_
+        );
+        return reply.fatalError(EAUTHORIZATION_REQUIRED, err.m_message);
+    }
+
+    // Stream at the binary's latest version, never at whatever version the space was left
+    if (!repo_->getSpaceConnection(source_space, err)) {
+        return reply.fatalError(EINVALID_STATE, err.m_message);
+    }
+    const std::string source_version = spaceSchemaVersion(repo_->getDbConnection(), source_space.dbfile_);
+
+    // New client to connect to the target server
+    const std::string& target_path = req.m_targetServer.m_sourceDataspacePath;
+    oes::client::ClientConfig cfg;
+    cfg.server_url_ = req.m_targetServer.m_sourceServer;
+    cfg.withJwtAuth(req.m_targetServer.m_sourceJwt);
+    cfg.data_partition_id_hdr_ = req.m_targetServer.m_sourcePartition;
+    cfg.max_mgs_size_ = session->negotiated_max_msg_size();
+    cfg.requested_protocols_.assign({
+        oes::client::data12::Protocol::eDataspaceOSDU
+    });
+
+    auto timeout = std::chrono::milliseconds(10000);
+    if (req.m_extraData.find("timeout_ms") != req.m_extraData.end()) {
+        timeout = std::chrono::milliseconds( std::stoull(req.m_extraData.at("timeout_ms")) );
+    }
+    // The commit may upgrade the copy on the target
+    auto commit_timeout = std::max(timeout, std::chrono::milliseconds(600000));
+    if (req.m_extraData.find("commit_timeout_ms") != req.m_extraData.end()) {
+        commit_timeout = std::chrono::milliseconds( std::stoull(req.m_extraData.at("commit_timeout_ms")) );
+    }
+
+    auto client = std::make_unique<oes::client::Client>(cfg);
+    err.m_message.clear();
+    err.m_code = 0;
+    if (!client->connect(timeout, &err)) {
+        std::string msg = fmt::format("Failed to connect to target server: {} # {}: {}", cfg.server_url_, err.m_code, err.m_message);
+        return reply.fatalError(EINVALID_ARGUMENT, msg);
+    }
+
+    auto* proto = client->space_osdu_proto();
+    if (!proto) {
+        return reply.fatalError(EINVALID_ARGUMENT, "Can not get space_osdu_proto");
+    }
+
+    // Each "put" must fit in a message the target accepts
+    const size_t max_msg_size = client->negotiated_max_msg_size();
+    if (max_msg_size < 1'000'000) {
+        return reply.fatalError(EINVALID_ARGUMENT, fmt::format(
+            "Max message size negotiated with target server {} is too small: {}", cfg.server_url_, max_msg_size
+        ));
+    }
+    const size_t put_budget = static_cast<size_t>(max_msg_size * 0.9);
+
+    const auto new_request = [&](const char* action) {
+        auto rpc = oes::client::rpcFor(proto, &oes::client::proto12::IDataspaceOSDU::CopyDataspaceToRemote);
+        rpc.req_.m_action = action;
+        rpc.req_.m_dataspacePath = target_path;
+        return rpc;
+    };
+
+    auto prepare = new_request("prepare");
+    std::string target_version;
+    std::ostringstream prepare_err;
+    if (!prepare.callForEachValue(prepare_err, timeout, [&](auto& entry) {
+            if (entry.m_tableName == "schema") {
+                target_version.assign(entry.m_tableData.begin(), entry.m_tableData.end());
+            }
+        })) {
+        if (prepare.rc_.ex.m_error && prepare.rc_.ex.m_error->m_code == EINVALID_MESSAGETYPE) {
+            return reply.fatalError(ENOTSUPPORTED, fmt::format(
+                "The target server {} cannot receive a dataspace: copy it from the target instead (CopyDataspaceFromRemote)",
+                cfg.server_url_
+            ));
+        }
+        return reply.fatalError(EINVALID_ARGUMENT, "Cannot prepare the target dataspace: " + prepare_err.str());
+    }
+
+    // From here the target holds a transaction: a "put" of a failed part rolls it back
+    const auto abort_target = [&]() {
+        try {
+            auto abort_put = new_request("put");
+            TableData& td = abort_put.req_.m_tableData.emplace_back();
+            td.m_copyStatus = static_cast<uint8_t>(SpaceStreamStatus::eFailed);
+            std::ostringstream ignored;
+            abort_put.callForEachValue(ignored, timeout, [](auto&) {});
+        } catch (const std::exception& e) {
+            OES_ERROR("Cannot stop the copy into dataspace {} on {}: {}", target_path, cfg.server_url_, e.what());
+        }
+    };
+
+    try {
+        std::string error;
+        const auto stream_at = streamVersionFor(
+            repo_->getDbConnection(), source_space, source_version, target_version, true, error
+        );
+        if (!stream_at) {
+            abort_target();
+            return reply.fatalError(EINVALID_STATE, error);
+        }
+
+        OES_INFO(
+            "[{}] SVR Thread({}) Session({}) DataspaceOSDU(2424).CopyDataspaceToRemote(11): sending dataspace {} at schema {} to {} {}",
+            session->client_identification_, oes::core::thisThreadId(), session->id(),
+            source_space.path_, stream_at->version, cfg.server_url_, target_path
+        );
+
+        // A part fits in a "put" with the other fields
+        PGStreamer pg_streamer(
+            source_space, repo_->getDbConnection(), has_ref, put_budget,
+            stream_at->version, stream_at->project_to
+        );
+
+        const auto part_bytes = [](const TableData& td) {
+            return 16 + td.m_tableName.size() + td.m_tableData.size();
+        };
+
+        SpaceStreamStatus status = SpaceStreamStatus::eOngoing;
+        std::optional<TableData> next_part; // did not fit in the previous "put"
+        while (status == SpaceStreamStatus::eOngoing || next_part) {
+            auto put = new_request("put");
+            size_t bytes = 0;
+            if (next_part) {
+                bytes += part_bytes(*next_part);
+                put.req_.m_tableData.push_back(std::move(*next_part));
+                next_part.reset();
+            }
+            while (status == SpaceStreamStatus::eOngoing) {
+                TableData td;
+                status = pg_streamer.stream(td);
+                td.m_copyStatus = static_cast<uint8_t>(status);
+                const size_t n = part_bytes(td);
+                if (!put.req_.m_tableData.empty() && bytes + n > put_budget) {
+                    next_part = std::move(td);
+                    break;
+                }
+                bytes += n;
+                put.req_.m_tableData.push_back(std::move(td));
+            }
+
+            std::ostringstream put_err;
+            if (!put.callForEachValue(put_err, timeout, [&](auto& entry) {
+                    TableData& td = reply.addVecPart();
+                    td.m_copyStatus = entry.m_copyStatus;
+                    td.m_tableName = entry.m_tableName;
+                    reply.maybeProcess(0, true);
+                })) {
+                abort_target();
+                if (status == SpaceStreamStatus::eFailed) {
+                    return reply.fatalError(EINVALID_STATE, fmt::format("Failed to stream the source dataspace {}", source_space.path_));
+                }
+                return reply.fatalError(EINVALID_ARGUMENT, "Error sending table binary data: " + put_err.str());
+            }
+        }
+
+        // A failed commit rolls back on the target; one timing out may still complete there
+        auto commit = new_request("commit");
+        std::ostringstream commit_err;
+        if (!commit.callForEachValue(commit_err, commit_timeout, [](auto&) {})) {
+            return reply.fatalError(EINVALID_STATE, fmt::format(
+                "Cannot commit the target dataspace {} on {} (after a time-out, the copy may still complete there): {}",
+                target_path, cfg.server_url_, commit_err.str()
+            ));
+        }
+    } catch (...) {
+        abort_target();
+        throw;
+    }
+
+    OES_INFO(
+        "[{}] SVR Thread({}) Session({}) DataspaceOSDU(2424).CopyDataspaceToRemote(11): sent dataspace {} to {} {}",
+        session->client_identification_, oes::core::thisThreadId(), session->id(),
+        source_space.path_, cfg.server_url_, target_path
+    );
+
+    reply.finalProcess();
+} catch (...) {
+    etp12::handleException(process_cb);
+}
+
+/*!
+ * \brief Push the content of a dataspace to a remote server. Behavior depends on action option:
+ * "trigger" (client to source) makes the source connect to the target and push the space;
+ * "prepare", "put" and "commit" (source to target) ingest it into the target space.
+ * \param ireq ignored
+ * \param req ETP request
+ * \param process_cb ETP response callback
+*/
+void OpenKVDataspaceOSDU::CopyDataspaceToRemote( // messageTypeId 11
+    IRequest& ireq, CopyDataspaceToRemote_req_t req,
+    EtpResponseHandler<CopyDataspaceToRemote_res_t> process_cb // messageTypeId 12
+) try {
+    assert(typeOf(ireq) == req.info.type_);
+    const auto api(txApi(req.info.api_));
+
+    if (req.m_action == "trigger") {
+        return CopyDataspaceToRemote_trigger(std::move(req), process_cb);
+    } else if (req.m_action == "prepare") {
+        return CopyDataspaceToRemote_prepare(std::move(req), process_cb);
+    } else if (req.m_action == "put") {
+        return CopyDataspaceToRemote_put(std::move(req), process_cb);
+    } else if (req.m_action == "commit") {
+        return CopyDataspaceToRemote_commit(std::move(req), process_cb);
+    }
+
+    return process_cb(errorStatus(EINVALID_ARGUMENT, "requested action must be trigger, prepare, put or commit"), {});
 
 } catch (...) {
     etp12::handleException(process_cb);

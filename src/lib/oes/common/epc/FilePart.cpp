@@ -19,6 +19,7 @@ under the License.
 #include "ContentType.h"
 
 #include "rapidxml_ns.hpp"
+#include <algorithm>
 #include <sstream>
 #include <regex>
 #include <stdexcept>
@@ -609,13 +610,41 @@ FilePart::ScanRc FilePart::scan(
     std::function<ScanRc(const xml::XmlName&, const xml::AbstractCitedDataObject&)> on_cited,
     std::function<ScanRc(const xml::NameValuePair&)> on_xdata,
     std::function<ScanRc(const xml::XmlPathGetter&, const xml::DataObjectReference&)> on_reference,
-    std::function<ScanRc(const xml::XmlPathGetter&, const xml::Hdf5Dataset&)> on_dataset
+    std::function<ScanRc(const xml::XmlPathGetter&, const xml::Hdf5Dataset&)> on_dataset,
+    std::string* error
 ) try {
     rapidxml_ns::xml_document<char> doc;
-    doc.parse<rapidxml_ns::parse_default>(xml.data());
+    try {
+        doc.parse<rapidxml_ns::parse_default>(xml.data());
+    } catch (const rapidxml_ns::parse_error& e) {
+        if (error) {
+            const char* where = e.where<char>();
+            const char* begin = xml.data();
+            const char* end = begin + xml.size();
+            std::string context;
+            size_t line = 1;
+            size_t offset = 0;
+            if (where && where >= begin && where <= end) {
+                offset = size_t(where - begin);
+                line += size_t(std::count(begin, where, '\n'));
+                // text at the failure point (the parser is destructive, only
+                // what follows the failure point is still intact)
+                for (const char* p = where; p < end && context.size() < 40; ++p) {
+                    context.push_back((*p == '\0' || *p == '\n' || *p == '\r' || *p == '\t') ? ' ' : *p);
+                }
+            }
+            *error = fmt::format(
+                "{} at line {} (offset {}) near '{}'", e.what(), line, offset, context
+            );
+        }
+        return eKO_XML_ERROR;
+    }
 
     rapidxml_ns::xml_node<char>* root = doc.first_node();
     if (!root) {
+        if (error) {
+            *error = "empty document (no root element)";
+        }
         return eKO_XML_ERROR;
     }
 
@@ -823,7 +852,15 @@ FilePart::ScanRc FilePart::scan(
     }
 
     return eOK_DONE;
+} catch (const std::exception& e) {
+    if (error) {
+        *error = e.what();
+    }
+    return eKO_XML_ERROR;
 } catch (...) {
+    if (error) {
+        *error = "unknown XML scan failure";
+    }
     return eKO_XML_ERROR;
 }
 
@@ -879,7 +916,7 @@ auto FilePart::scanData(
     }
 
     epc::FilePart::ScanRc rc = epc::FilePart::scan(
-        std::move(xml), on_cited, on_xdata, on_refs, on_hdfs
+        std::move(xml), on_cited, on_xdata, on_refs, on_hdfs, &scanned.error_
     );
 
     return { scanned, rc };
