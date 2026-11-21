@@ -144,12 +144,18 @@ public:
         eKO_ABORTED, // by client-callback
         eKO_XML_ERROR // internal XML (parser?) error
     };
+    /*!
+     * \param error when non-null and the result is eKO_XML_ERROR, receives a
+     * human readable description of the parser failure (message, line, offset
+     * and the text at the failure point).
+     */
     static ScanRc scan(
         std::string xml,
         std::function<ScanRc(const xml::XmlName&, const xml::AbstractCitedDataObject&)> on_cited,
         std::function<ScanRc(const xml::NameValuePair&)> on_xdata,
         std::function<ScanRc(const xml::XmlPathGetter&, const xml::DataObjectReference&)> on_reference,
-        std::function<ScanRc(const xml::XmlPathGetter&, const xml::Hdf5Dataset&)> on_dataset
+        std::function<ScanRc(const xml::XmlPathGetter&, const xml::Hdf5Dataset&)> on_dataset,
+        std::string* error = nullptr
     );
 
     using NamedRef = std::pair<std::string, xml::DataObjectReference>;
@@ -161,6 +167,7 @@ public:
         std::vector<xml::NameValuePair> xdata_;
         std::vector<NamedRef> refs_;
         std::vector<NamedHdf> hdfs_;
+        std::string error_; // parser failure detail when rc == eKO_XML_ERROR
     };
     enum ScanFlag {
         eCited = 1, eXData = 2, eRefs = 4, eHdfs = 8,

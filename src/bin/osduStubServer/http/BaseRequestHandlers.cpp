@@ -253,7 +253,16 @@ namespace oes::testing
             }
             else if (core::StringUtils::caseInsensitiveCompare(httpContext.request.method, "POST") == 0)
             {
-                processed = createEntity(httpContext);
+                // OSDU logical delete: POST /{resource}/{id}:delete
+                static const std::string delete_suffix(":delete");
+                if (id && id->size() > delete_suffix.size() &&
+                    id->compare(id->size() - delete_suffix.size(), delete_suffix.size(), delete_suffix) == 0)
+                {
+                    processed = deleteEntity(httpContext, id->substr(0, id->size() - delete_suffix.size()));
+                }
+                else {
+                    processed = createEntity(httpContext);
+                }
             }
             else if (core::StringUtils::caseInsensitiveCompare(httpContext.request.method, "PUT") == 0)
             {

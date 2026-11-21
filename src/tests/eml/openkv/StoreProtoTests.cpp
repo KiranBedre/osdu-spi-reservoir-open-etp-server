@@ -28,7 +28,15 @@
 #include <oes/eml/openkv/AdminDB.h>
 #include <oes/eml/openkv/SpaceDML.h>
 
+#include <oes/postgresql/PhysicalName.h>
+
+#include <oes/core/utils/config_enter_3rdparty.h>
+#include <fmt/format.h>
+#include <oes/core/utils/config_leave_3rdparty.h>
+
+#include <algorithm>
 #include <cmath>
+#include <cstdlib>
 
 namespace {
 
@@ -402,9 +410,9 @@ BOOST_AUTO_TEST_CASE(test_Store4_ary_container_EpcExternalPartReference_old_spel
     BOOST_CHECK(found == (std::vector<bool>{ true, true, false }));
 
     writer->check_ary_container(old_ext, true);
-    BOOST_CHECK(writer->check_pending_ary_containers().empty());
+    BOOST_CHECK(writer->check_pending_ary_containers(space_uri.dataspace_).empty());
     writer->check_ary_container({ "eml20.EpcExternalPartReference", Guid::make() }, true);
-    BOOST_CHECK_EQUAL(writer->check_pending_ary_containers().size(), 1u);
+    BOOST_CHECK_EQUAL(writer->check_pending_ary_containers(space_uri.dataspace_).size(), 1u);
 }
 
 // A RESQML 2.2 array belongs to the object holding it, even when <URI> names a file as in an EPC
@@ -675,6 +683,398 @@ BOOST_AUTO_TEST_CASE(test_Store4_DeleteDataObjects_from_multiple_spaces)
     BOOST_REQUIRE_EQUAL(del_store_rpc.res_.m_deletedUris[space1.m_path].m_values.front(), space1Obj.m_resource.m_uri);
     BOOST_REQUIRE_EQUAL(del_store_rpc.res_.m_deletedUris[space2.m_path].m_values.size(), 1);
     BOOST_REQUIRE_EQUAL(del_store_rpc.res_.m_deletedUris[space2.m_path].m_values.front(), space2Obj.m_resource.m_uri);
+}
+
+BOOST_AUTO_TEST_CASE(test_Store4_DeleteDataObjects_existing_and_missing) {
+    for (const bool in_tx : { false, true }) {
+        BOOST_TEST_CONTEXT("in_tx " << in_tx) {
+            const auto space = putSpace(in_tx ? "ut_test/delete_tx" : "ut_test/delete_no_tx");
+            const auto crs = putCrsObj(space);
+            const std::string missing = EmlUri::parse(space.m_uri).child_type(
+                oes::testing::eml::crs_mock().type_, EmlUri::eRESQML20
+            ).child_obj(Guid::make()).to_string();
+
+            const Guid txUid = in_tx ? startTx(space.m_uri, false) : Guid();
+            auto del_rpc = makeRpc(&OpenKVStore::DeleteDataObjects);
+            del_rpc.req_.m_uris.emplace("crs", crs.m_resource.m_uri);
+            del_rpc.req_.m_uris.emplace("missing", missing);
+            del_rpc.call();
+            if (in_tx) {
+                BOOST_REQUIRE(commitTx(txUid));
+            }
+
+            BOOST_REQUIRE_EQUAL(del_rpc.res_.m_deletedUris.size(), 1u);
+            BOOST_CHECK(del_rpc.res_.m_deletedUris["crs"].m_values == std::vector<std::string>{ crs.m_resource.m_uri });
+            const auto& errors = del_rpc.rc_.ex.m_errors;
+            BOOST_REQUIRE_EQUAL(errors.size(), 1u);
+            BOOST_CHECK_EQUAL(errors.begin()->first, "missing");
+            BOOST_CHECK_EQUAL(errors.begin()->second.m_code, ENOT_FOUND);
+
+            BOOST_CHECK_EQUAL(objCount(space), 0u);
+            auto get_deleted_rpc = makeRpc(&OpenKVDiscovery::GetDeletedResources);
+            get_deleted_rpc.req_.m_dataspaceUri = space.m_uri;
+            BOOST_REQUIRE(get_deleted_rpc.call());
+            BOOST_REQUIRE_EQUAL(get_deleted_rpc.res_.m_deletedResources.size(), 1u);
+            BOOST_CHECK_EQUAL(get_deleted_rpc.res_.m_deletedResources[0].m_uri, crs.m_resource.m_uri);
+        }
+    }
+}
+
+// Each object is replied under its own client id
+BOOST_AUTO_TEST_CASE(test_Store4_DeleteDataObjects_same_guid_two_types) {
+    for (const bool in_tx : { false, true }) {
+        BOOST_TEST_CONTEXT("in_tx " << in_tx) {
+            const auto space = putSpace(in_tx ? "ut_test/delete_tx" : "ut_test/delete_no_tx");
+            const auto& crs = oes::testing::eml::crs_mock();
+            const auto crs_obj = putMockObj(space, crs);
+            const auto ext_obj = putMockObj(space, oes::testing::eml::with_guid(oes::testing::eml::epc_ext_mock(), crs.guid_));
+
+            const Guid txUid = in_tx ? startTx(space.m_uri, false) : Guid();
+            auto del_rpc = makeRpc(&OpenKVStore::DeleteDataObjects);
+            del_rpc.req_.m_uris.emplace("crs", crs_obj.m_resource.m_uri);
+            del_rpc.req_.m_uris.emplace("ext", ext_obj.m_resource.m_uri);
+            del_rpc.call();
+            if (in_tx) {
+                BOOST_REQUIRE(commitTx(txUid));
+            }
+
+            BOOST_CHECK(del_rpc.rc_.ex.m_errors.empty());
+            const std::map<std::string, std::string> expected{
+                { "crs", crs_obj.m_resource.m_uri }, { "ext", ext_obj.m_resource.m_uri }
+            };
+            for (const auto& [cid, uri] : expected) {
+                const auto it = del_rpc.res_.m_deletedUris.find(cid);
+                BOOST_CHECK_MESSAGE(
+                    it != del_rpc.res_.m_deletedUris.end() && it->second.m_values == std::vector<std::string>{ uri },
+                    cid << " not deleted under its own client id"
+                );
+            }
+            BOOST_CHECK_EQUAL(objCount(space), 0u);
+        }
+    }
+}
+
+BOOST_AUTO_TEST_CASE(test_Store4_DeleteDataObjects_several_requests_in_tx) {
+    const auto space = putSpace();
+    std::vector<data12::Object::DataObject> objs;
+    for (int i = 0; i < 3; ++i) {
+        objs.push_back(putMockObj(space, oes::testing::eml::with_guid(oes::testing::eml::crs_mock(), Guid::make())));
+    }
+
+    const Guid txUid = startTx(space.m_uri, false);
+    for (const auto& batch : { std::vector<size_t>{ 0 }, std::vector<size_t>{ 1, 2 } }) {
+        auto del_rpc = makeRpc(&OpenKVStore::DeleteDataObjects);
+        for (const size_t i : batch) {
+            del_rpc.req_.m_uris.emplace(std::to_string(i), objs[i].m_resource.m_uri);
+        }
+        if (!del_rpc.call() || hasError(del_rpc.rc_)) {
+            BOOST_REQUIRE_MESSAGE(false, errorOf(del_rpc.rc_));
+        }
+        BOOST_CHECK_EQUAL(del_rpc.res_.m_deletedUris.size(), batch.size());
+    }
+    BOOST_REQUIRE(commitTx(txUid));
+
+    BOOST_CHECK_EQUAL(objCount(space), 0u);
+    auto get_deleted_rpc = makeRpc(&OpenKVDiscovery::GetDeletedResources);
+    get_deleted_rpc.req_.m_dataspaceUri = space.m_uri;
+    BOOST_REQUIRE(get_deleted_rpc.call());
+    BOOST_CHECK_EQUAL(get_deleted_rpc.res_.m_deletedResources.size(), 3u);
+}
+
+// The rel.cnt of each target of the object, sorted
+std::string relCounts(oes::testing::eml::OpenKVServerFixture& fx, const data12::Object::Dataspace& space, const Guid& uid) {
+    const oes::postgresql::relational::PhysicalName phys(
+        fx.admin_db_->findSpace(space.m_path).dbfile_, oes::postgresql::relational::IMPLICIT_LOWERCASE
+    );
+    return fx.admin_db_->handle()->executeString(fmt::format(
+        "SELECT string_agg(r.cnt::text, ',' ORDER BY r.cnt) FROM {0}.rel AS r"
+        " JOIN {0}.res AS o ON o.obj_id = r.obj_id WHERE o.guid = '{1}'",
+        phys.quotedName(), uid.toXmlString()
+    ));
+}
+
+std::string expectedCounts(size_t ref_count, size_t targets) {
+    std::vector<size_t> counts(targets, ref_count / targets);
+    for (size_t i = 0; i < ref_count % targets; ++i) {
+        ++counts[i];
+    }
+    std::sort(counts.begin(), counts.end());
+    std::string text;
+    for (const size_t c : counts) {
+        text += (text.empty() ? "" : ",") + std::to_string(c);
+    }
+    return text;
+}
+
+// Duplicate references fold into rel.cnt, whatever the bulk size and wherever they fall in the chunks
+BOOST_AUTO_TEST_CASE(test_Store4_PutDataObjects_rel_cnt) {
+    for (const size_t bulk_size : { size_t(100), size_t(7) }) {
+        BOOST_TEST_CONTEXT("bulk size " << bulk_size) {
+            session_->pg_bulk_size_ = bulk_size;
+            const auto space = putSpace(fmt::format("ut_test/rel_cnt_{}", bulk_size));
+            const std::vector<Guid> crs_guids{ Guid::make(), Guid::make(), Guid::make() };
+            for (const Guid& uid : crs_guids) {
+                putMockObj(space, oes::testing::eml::with_guid(oes::testing::eml::crs_mock(), uid));
+            }
+
+            for (const size_t ref_count : { size_t(2), size_t(5), size_t(7), size_t(23), size_t(250) }) {
+                BOOST_TEST_CONTEXT("references " << ref_count) {
+                    const auto datum = oes::testing::eml::datum_referencing(crs_guids, ref_count);
+                    putMockObj(space, datum);
+                    BOOST_CHECK_EQUAL(
+                        relCounts(*this, space, datum.guid_),
+                        expectedCounts(ref_count, std::min(ref_count, crs_guids.size()))
+                    );
+                }
+            }
+
+            // Targets put after the datum, in the same transaction
+            const std::vector<Guid> late_guids{ Guid::make(), Guid::make() };
+            const auto datum = oes::testing::eml::datum_referencing(late_guids, 23);
+            const Guid txUid = startTx(space.m_uri, false);
+            putMockObj(space, datum);
+            for (const Guid& uid : late_guids) {
+                putMockObj(space, oes::testing::eml::with_guid(oes::testing::eml::crs_mock(), uid));
+            }
+            BOOST_REQUIRE(commitTx(txUid));
+            BOOST_CHECK_EQUAL(relCounts(*this, space, datum.guid_), expectedCounts(23, late_guids.size()));
+        }
+    }
+    session_->pg_bulk_size_ = 100;
+}
+
+//============================================================================
+// Import-activity lifecycle, governed by the single --check-activities option
+// (Session::check_activities_), fixed at startup.
+//
+// The server generates a RESQML Activity (+ ActivityTemplate) describing each
+// import when check_activities_ is enabled, using a DETERMINISTIC name-based
+// UUID. The test fixture disables it by default, so these cases opt in
+// explicitly via session_->check_activities_.
+//
+// Helper: return the UUID of the generated import Activity in a space, or an
+// invalid Guid if none exists.
+namespace {
+Guid findImportActivityUuid(
+    oes::testing::eml::OpenKVServerFixture& fx,
+    const std::string& space_uri
+) {
+    auto get_disco_rpc = fx.makeRpc(&OpenKVDiscovery::GetResources);
+    get_disco_rpc.req_.m_context.m_uri = space_uri;
+    get_disco_rpc.req_.m_context.m_depth = 1;
+    get_disco_rpc.req_.m_scope = Object::ContextScopeKind::eSelf;
+    BOOST_REQUIRE(get_disco_rpc.call());
+    for (const auto& res : get_disco_rpc.res_.m_resources) {
+        // The import Activity object URI contains the RESQML type token
+        // "obj_Activity(" ; the ActivityTemplate URI uses "obj_ActivityTemplate("
+        // and therefore does not match.
+        if (res.m_uri.find("obj_Activity(") != std::string::npos) {
+            return EmlUri::parse(res.m_uri).guid_;
+        }
+    }
+    return Guid{}; // invalid
+}
+} // namespace
+
+// Enabled + --stable-import-activity-uuid: an import generates an Activity +
+// ActivityTemplate, and the Activity UUID is DETERMINISTIC -> re-importing the
+// same object yields the same Activity UUID (idempotent, no orphaned duplicates).
+BOOST_AUTO_TEST_CASE(import_activity_stable_uuid_is_deterministic) {
+    session_->check_activities_ = true;
+    session_->stable_import_activity_uuid_ = true;
+
+    const auto spaceA = putSpace("GOM/ActManagedA");
+    const auto spaceB = putSpace("GOM/ActManagedB");
+
+    // The datum (obj_MdDatum) references the standard local-depth CRS and is a
+    // non-ignored import type, so with check-activities enabled it yields an Activity +
+    // ActivityTemplate. Put the referenced CRS first so the reference resolves.
+    putMockObj(spaceA, oes::testing::eml::crs_mock());
+    putMockObj(spaceA, oes::testing::eml::datum_mock());
+    putMockObj(spaceB, oes::testing::eml::crs_mock());
+    putMockObj(spaceB, oes::testing::eml::datum_mock());
+
+    // CRS + datum + auto-generated Activity + ActivityTemplate = 4 objects.
+    // (The CRS is an ignored import type and generates no Activity of its own.)
+    BOOST_CHECK_EQUAL(objCount(spaceA), size_t(4));
+    BOOST_CHECK_EQUAL(objCount(spaceB), size_t(4));
+
+    const Guid a = findImportActivityUuid(*this, spaceA.m_uri);
+    const Guid b = findImportActivityUuid(*this, spaceB.m_uri);
+    BOOST_REQUIRE(a.isValid());
+    BOOST_REQUIRE(b.isValid());
+    // Same output object -> same deterministic Activity UUID across imports.
+    BOOST_CHECK_EQUAL(a.toXmlString(), b.toXmlString());
+}
+
+// Enabled, default mode: each import appends its own Activity (random UUID), so
+// the same object imported twice yields two distinct Activity UUIDs. This is the
+// M27 behaviour and stays the default.
+BOOST_AUTO_TEST_CASE(import_activity_default_appends) {
+    session_->check_activities_ = true;
+    session_->stable_import_activity_uuid_ = false;
+
+    const auto spaceA = putSpace("GOM/ActAppendA");
+    const auto spaceB = putSpace("GOM/ActAppendB");
+
+    putMockObj(spaceA, oes::testing::eml::crs_mock());
+    putMockObj(spaceA, oes::testing::eml::datum_mock());
+    putMockObj(spaceB, oes::testing::eml::crs_mock());
+    putMockObj(spaceB, oes::testing::eml::datum_mock());
+
+    BOOST_CHECK_EQUAL(objCount(spaceA), size_t(4));
+    BOOST_CHECK_EQUAL(objCount(spaceB), size_t(4));
+
+    const Guid a = findImportActivityUuid(*this, spaceA.m_uri);
+    const Guid b = findImportActivityUuid(*this, spaceB.m_uri);
+    BOOST_REQUIRE(a.isValid());
+    BOOST_REQUIRE(b.isValid());
+    BOOST_CHECK_NE(a.toXmlString(), b.toXmlString());
+}
+
+// Disabled: no Activity / ActivityTemplate is produced; only the imported object
+// remains. Verifies the opt-in gate fully suppresses generation.
+BOOST_AUTO_TEST_CASE(import_activity_off_suppresses) {
+    session_->check_activities_ = false;
+
+    const auto space = putSpace("GOM/ActOff");
+    putMockObj(space, oes::testing::eml::crs_mock());
+    putMockObj(space, oes::testing::eml::datum_mock());
+
+    BOOST_CHECK_EQUAL(objCount(space), size_t(2)); // CRS + datum, no Activity
+    BOOST_CHECK(!findImportActivityUuid(*this, space.m_uri).isValid());
+}
+
+// Transaction path (TransProto): an ETP transaction commit also honours the
+// opt-in. Enabled -> Activity generated; disabled -> suppressed.
+BOOST_AUTO_TEST_CASE(import_activity_transaction_path_honours_policy) {
+    // enabled via explicit transaction
+    {
+        session_->check_activities_ = true;
+        const auto space = putSpace("GOM/ActTxManaged");
+        const auto txUid = startTx(EmlUri::parse(space.m_uri).to_string(), false);
+        putMockObj(space, oes::testing::eml::crs_mock());
+        putMockObj(space, oes::testing::eml::datum_mock());
+        BOOST_REQUIRE(commitTx(txUid));
+        BOOST_CHECK_EQUAL(objCount(space), size_t(4));
+        BOOST_CHECK(findImportActivityUuid(*this, space.m_uri).isValid());
+    }
+
+    // disabled via explicit transaction
+    {
+        session_->check_activities_ = false;
+        const auto space = putSpace("GOM/ActTxOff");
+        const auto txUid = startTx(EmlUri::parse(space.m_uri).to_string(), false);
+        putMockObj(space, oes::testing::eml::crs_mock());
+        putMockObj(space, oes::testing::eml::datum_mock());
+        BOOST_REQUIRE(commitTx(txUid));
+        BOOST_CHECK_EQUAL(objCount(space), size_t(2));
+        BOOST_CHECK(!findImportActivityUuid(*this, space.m_uri).isValid());
+    }
+}
+
+//============================================================================
+// Per-object acceptance checks of PutDataObjects: a rejected object must come
+// back as a per-object EINVALID_OBJECT with an actionable message, never abort
+// the server or leave something the store cannot address again.
+
+namespace {
+
+//! Puts one object built from `xml` (the mock with its text replaced) and
+//! returns the rpc, without asserting on the outcome.
+auto putRawXml(
+    oes::testing::eml::OpenKVServerFixture& fx,
+    const data12::Object::Dataspace& space,
+    const oes::testing::eml::EmlObjMock& mock,
+    const std::string& xml
+) {
+    auto rpc = fx.makeRpc(&OpenKVStore::PutDataObjects);
+    data12::Object::DataObject obj;
+    obj.m_resource.m_uri = EmlUri::parse(space.m_uri)
+        .child_type(mock.type_, EmlUri::eRESQML20).child_obj(mock.guid_).to_string();
+    obj.m_resource.m_name = mock.name_;
+    obj.m_format = "xml";
+    obj.m_data.assign(xml.begin(), xml.end());
+    rpc.req_.m_dataObjects.emplace("obj", obj);
+    rpc.call();
+    return rpc;
+}
+
+std::string replaced(std::string s, const std::string& from, const std::string& to) {
+    const size_t pos = s.find(from);
+    BOOST_REQUIRE_NE(pos, std::string::npos);
+    return s.replace(pos, from.size(), to);
+}
+
+} // namespace
+
+BOOST_AUTO_TEST_CASE(put_rejects_object_with_detail) {
+    const auto space = putSpace("ut_test/put_rejects");
+    const auto crs = oes::testing::eml::with_guid(oes::testing::eml::crs_mock(), Guid::make());
+
+    struct Case { const char* name; std::string xml; const char* expected; };
+    const Case cases[] = {
+        { "malformed Citation/Creation",
+          replaced(crs.xml_, "1970-01-01T00:00:00Z", "yesterday"),
+          "Invalid Citation/Creation 'yesterday'" },
+        { "unsupported namespace + schemaVersion",
+          replaced(crs.xml_, "schemaVersion=\"2.0.0.20140822\"", "schemaVersion=\"9.9\""),
+          "Unsupported data object type" },
+        { "truncated XML",
+          crs.xml_.substr(0, crs.xml_.size() / 2),
+          "Cannot parse XML: " },
+        { "invalid uuid",
+          replaced(crs.xml_, "uuid=\"" + crs.guid_.toXmlString(), "uuid=\"not-a-uuid"),
+          "Invalid UUID 'not-a-uuid'" },
+    };
+    for (const Case& c : cases) {
+        BOOST_TEST_CONTEXT(c.name) {
+            const auto rpc = putRawXml(*this, space, crs, c.xml);
+            BOOST_REQUIRE(hasError(rpc.rc_));
+            BOOST_REQUIRE_EQUAL(rpc.rc_.ex.m_errors.size(), 1u);
+            BOOST_CHECK_EQUAL(rpc.rc_.ex.m_errors.begin()->second.m_code, EINVALID_OBJECT);
+            BOOST_CHECK_MESSAGE(
+                errorOf(rpc.rc_).find(c.expected) != std::string::npos,
+                "unexpected message: " << errorOf(rpc.rc_)
+            );
+            BOOST_CHECK_EQUAL(objCount(space), 0u);
+        }
+    }
+    // The same object, intact, is still accepted afterwards (the server is alive).
+    putMockObj(space, crs);
+    BOOST_CHECK_EQUAL(objCount(space), 1u);
+}
+
+// A non-transactional put records the object in an auto-import Activity; that
+// bookkeeping must not pin the object (rel_dst_id_fkey), while a live user
+// object that still references it must block the delete with a readable reason.
+BOOST_AUTO_TEST_CASE(delete_blocked_only_by_live_user_references) {
+    session_->check_activities_ = true;
+    const auto space = putSpace("ut_test/delete_blockers");
+    const auto crs = putCrsObj(space);
+    const auto datum = putDatumObj(space); // references crs, recorded in an import Activity
+    BOOST_REQUIRE_EQUAL(objCount(space), 4u); // crs + datum + Activity + ActivityTemplate
+
+    auto del_rpc = makeRpc(&OpenKVStore::DeleteDataObjects);
+    del_rpc.req_.m_uris.emplace("crs", crs.m_resource.m_uri);
+    del_rpc.call();
+    BOOST_REQUIRE(hasError(del_rpc.rc_));
+    BOOST_REQUIRE(del_rpc.rc_.ex.m_error);
+    BOOST_CHECK_EQUAL(del_rpc.rc_.ex.m_error->m_code, EINVALID_STATE);
+    const std::string why = errorOf(del_rpc.rc_);
+    BOOST_CHECK_MESSAGE(why.find("still referenced") != std::string::npos, why);
+    BOOST_CHECK_MESSAGE(why.find(crs.m_resource.m_uri) != std::string::npos, why);
+    BOOST_CHECK_MESSAGE(why.find("obj_MdDatum(") != std::string::npos, why);
+    BOOST_CHECK_EQUAL(objCount(space), 4u); // nothing deleted
+
+    // The import Activity alone does not block: deleting referrer + referee together succeeds.
+    del_rpc.req_.m_uris.emplace("datum", datum.m_resource.m_uri);
+    del_rpc.call();
+    if (hasError(del_rpc.rc_)) {
+        BOOST_REQUIRE_MESSAGE(false, errorOf(del_rpc.rc_));
+    }
+    BOOST_CHECK_EQUAL(del_rpc.res_.m_deletedUris.size(), 2u);
+    BOOST_CHECK_EQUAL(objCount(space), 2u); // Activity + ActivityTemplate remain
 }
 
 BOOST_AUTO_TEST_SUITE_END() // StoreProtoTests

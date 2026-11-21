@@ -2,7 +2,7 @@
 // WARNING: DO NOT EDIT: SharedComponents/src/bin/etpgencpp Generated File
 
 // ============================================================================
-// Copyright 2018-2021 Emerson Paradigm Holding LLC. All rights reserved.
+// Copyright 2018-2026 Emerson Paradigm Holding LLC. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -185,6 +185,8 @@ const std::map<std::pair<int, int>, const MessageInfo>& messages() {
         { { 2424, 8 }, { 2424, 8, true, "CopyToDataspaceResponse", "Energistics.Etp.v12.Protocol.DataspaceOSDU" } },
         { { 2424, 9 }, { 2424, 9, false, "CopyDataspaceFromRemote", "Energistics.Etp.v12.Protocol.DataspaceOSDU" } },
         { { 2424, 10 }, { 2424, 10, true, "CopyDataspaceFromRemoteResponse", "Energistics.Etp.v12.Protocol.DataspaceOSDU" } },
+        { { 2424, 11 }, { 2424, 11, false, "CopyDataspaceToRemote", "Energistics.Etp.v12.Protocol.DataspaceOSDU" } },
+        { { 2424, 12 }, { 2424, 12, true, "CopyDataspaceToRemoteResponse", "Energistics.Etp.v12.Protocol.DataspaceOSDU" } },
     };
     return messages__;
 }
@@ -252,6 +254,7 @@ const std::map<std::pair<int, int>, std::pair<int, int>>& apis() {
         { { 2424, 5 }, { 2424, 6 } },
         { { 2424, 7 }, { 2424, 8 } },
         { { 2424, 9 }, { 2424, 10 } },
+        { { 2424, 11 }, { 2424, 12 } },
     };
     return apis__;
 }
@@ -670,6 +673,10 @@ avro::ValidSchema schemaOf(int protocolId, int messageTypeId) {
             return Protocol::DataspaceOSDU::CopyDataspaceFromRemote::schema();
         case Protocol::DataspaceOSDU::CopyDataspaceFromRemoteResponse::info.type_.type_: // 10
             return Protocol::DataspaceOSDU::CopyDataspaceFromRemoteResponse::schema();
+        case Protocol::DataspaceOSDU::CopyDataspaceToRemote::info.type_.type_: // 11
+            return Protocol::DataspaceOSDU::CopyDataspaceToRemote::schema();
+        case Protocol::DataspaceOSDU::CopyDataspaceToRemoteResponse::info.type_.type_: // 12
+            return Protocol::DataspaceOSDU::CopyDataspaceToRemoteResponse::schema();
         default:
             break;
         }
@@ -1095,6 +1102,10 @@ bool recodeMessage(int protocolId, int messageTypeId, avro::Decoder& dec, avro::
             return recode<Protocol::DataspaceOSDU::CopyDataspaceFromRemote>(dec, enc);
         case Protocol::DataspaceOSDU::CopyDataspaceFromRemoteResponse::info.type_.type_: // 10
             return recode<Protocol::DataspaceOSDU::CopyDataspaceFromRemoteResponse>(dec, enc);
+        case Protocol::DataspaceOSDU::CopyDataspaceToRemote::info.type_.type_: // 11
+            return recode<Protocol::DataspaceOSDU::CopyDataspaceToRemote>(dec, enc);
+        case Protocol::DataspaceOSDU::CopyDataspaceToRemoteResponse::info.type_.type_: // 12
+            return recode<Protocol::DataspaceOSDU::CopyDataspaceToRemoteResponse>(dec, enc);
         default:
             break;
         }

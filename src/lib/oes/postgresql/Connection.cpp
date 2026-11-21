@@ -200,7 +200,11 @@ Connection::Connection(PGconn_uptr conn)
             "SELECT set_config('USERENV.HOST', '{}', false)",
             oes::core::System::getHostName()
         ));
-    } catch(...) {} // intercept
+    } catch (const std::exception& ex) {
+        OES_WARNING("Unable to set PostgreSQL session metadata: {}", ex.what());
+    } catch (...) {
+        OES_WARNING("Unable to set PostgreSQL session metadata: unknown error");
+    }
 }
 
 /*!
@@ -811,8 +815,11 @@ void Connection::notice_receiver(void* arg, const PGresult* res) {
 
     try {
         self->notice_handler_(res, sev, primary, detail);
+    } catch (const std::exception& ex) {
+        OES_WARNING("PostgreSQL notice handler failed: {}", ex.what());
     } catch (...) {
         // called from C-code / libPQ, cannot propagate C++ exceptions out
+        OES_WARNING("PostgreSQL notice handler failed: unknown exception");
     }
 }
 

@@ -64,7 +64,7 @@ Azure::Core::Credentials::AccessToken MsiCustomEndpointCredential::GetToken(Azur
     const auto urlEncodedParameters = paramsToString(queryParameters);
     url = identityEndpoint_ + "?" + urlEncodedParameters;
 
-    OES_DEBUG("Get MSI token for scope: {} using url: {}\n and identity header: {}", scope, url, identityHeader_);
+    OES_DEBUG("Get MSI token for scope: {}", scope);
 
     const size_t unusedPort = 0;
     response = request.get(url, unusedPort, headers);

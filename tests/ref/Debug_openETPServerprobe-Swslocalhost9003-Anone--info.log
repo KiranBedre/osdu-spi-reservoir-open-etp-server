@@ -304,6 +304,11 @@ Info: {
             "int": 9
           }
         },
+        "CopyDataspaceToRemote": {
+          "item": {
+            "int": 11
+          }
+        },
         "CopyDataspacesContent": {
           "item": {
             "int": 3
@@ -346,6 +351,11 @@ Info: {
     "MaxWebSocketMessagePayloadSize": {
       "item": {
         "long": 2000000000
+      }
+    },
+    "supportedArrayExtensions": {
+      "item": {
+        "string": "stats,histogram,reduce,where,wheren"
       }
     }
   }
