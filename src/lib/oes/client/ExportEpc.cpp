@@ -95,10 +95,10 @@ void get_chunk(std::vector<hsize_t>& chunking) {
     chunking[chunking.size()-1] = std::min<hsize_t>(chunk_size, chunking[chunking.size()-1]);
     if (chunking.size() > 1) {
         chunk_size = chunk_size / chunking[chunking.size()-1];
-        for ( hsize_t i = chunking.size() - 2; i >= 0; i-- ){
+        for ( int64_t i = static_cast<int64_t>(chunking.size()) - 2; i >= 0; i-- ){
             chunking[i] = std::min<hsize_t>(chunk_size, chunking[i]);
             chunk_size /= chunking[i];
-            if (chunk_size == 0 || i == 0) {
+            if (chunk_size == 0) {
                 break;
             }
         }
@@ -399,6 +399,13 @@ void AryParts::write(HdfDataset& ds, size_t idx) {
     H5::DataSpace mem_space;
     hsize_t slab_size = productOf(counts);
     mem_space.setExtentSimple(1, &slab_size, &slab_size);
+
+    if (ary_mem.size() != static_cast<size_t>(slab_size)) {
+        throw std::runtime_error(fmt::format(
+            "HDF subarray size mismatch at idx {}: expected {} elems, got {} elems",
+            idx, slab_size, ary_mem.size()
+        ));
+    }
 
     ds.data_space.selectHyperslab(H5S_SELECT_SET, counts.data(), starts.data());
 
@@ -976,7 +983,11 @@ bool exportEpc(
         }
     }
 
-    assert(stats.object_count_ == (objs.size() - obj_errors));
+    if (stats.object_count_ != (objs.size() - obj_errors)) {
+        OES_ERROR("GetDataObjects returned {} of {} objects ({} object errors).",
+            thou(stats.object_count_), thou(objs.size()), thou(obj_errors));
+        return false;
+    }
 
     if (out) {
         OES_INFO("Got {} objects ({} XML bytes).",
@@ -1149,7 +1160,11 @@ bool exportEpc(
                 return false;
             }
         }
-        OES_ASSERT(array_infos.size() == meta_ok, ;);
+        if (array_infos.size() != meta_ok) {
+            OES_ERROR("GetDataArrayMetadata returned {} of {} arrays.",
+                thou(meta_ok), thou(array_infos.size()));
+            return false; // fail fast
+        }
     }
 
     if (!array_infos.empty()) {
@@ -2295,7 +2310,11 @@ bool exportEpcMt(
         return false;
     }
 
-    assert(stats.object_count_ == (objs.size() - obj_errors));
+    if (stats.object_count_ != (objs.size() - obj_errors)) {
+        OES_ERROR("GetDataObjects returned {} of {} objects ({} object errors).",
+            thou(stats.object_count_), thou(objs.size()), thou(obj_errors));
+        return false;
+    }
 
     if (out) {
         OES_INFO("Got {} objects ({} XML bytes).", thou(stats.object_count_), thou(stats.object_bytes_));
@@ -2371,7 +2390,11 @@ bool exportEpcMt(
                 return false;
             }
         }
-        OES_ASSERT(array_infos.size() == meta_ok, ;);
+        if (array_infos.size() != meta_ok) {
+            OES_ERROR("GetDataArrayMetadata returned {} of {} arrays.",
+                thou(meta_ok), thou(array_infos.size()));
+            return false; // fail fast
+        }
     }
 
     if (!array_infos.empty()) {

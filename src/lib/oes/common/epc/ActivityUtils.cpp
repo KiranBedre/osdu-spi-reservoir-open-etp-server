@@ -87,8 +87,8 @@ std::string get_import_activity_Citation(
 
     return fmt::format(
         citation_template,
-        title,
-        originator,
+        escapeXml(title),
+        escapeXml(originator),
         creation_dt,
         format
     );
@@ -231,7 +231,7 @@ std::string get_activity_template_data(
 
     return fmt::format(
         parameter_template,
-        user_id,
+        escapeXml(user_id),
         dt_creation
     );
 }

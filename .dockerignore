@@ -19,3 +19,5 @@
 !/build/**
 !/vcpkg.json
 !/config/**
+# needed by CMake to embed the commit hash
+!/.git/**

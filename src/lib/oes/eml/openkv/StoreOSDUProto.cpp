@@ -195,8 +195,10 @@ void OpenKVStoreOSDU::CopyDataObjectsByValue(
     if (session != nullptr) {
         try {
             AuditLog::log(*repo_->getServerConfig(), session, AuditLogConstants::OP_COPY_DATA_OBJECTS_BY_VALUE, AuditLogConstants::RESULT_FAILURE, AuditLogConstants::ACTION_CREATE, req.m_uri, "Unexpected exception during CopyDataObjectsByValue");
+        } catch (const std::exception& ex) {
+            OES_ERROR("Failed to audit CopyDataObjectsByValue failure: {}", ex.what());
         } catch (...) {
-            // Ignore audit log errors in exception handler
+            OES_ERROR("Failed to audit CopyDataObjectsByValue failure: unknown exception");
         }
     }
     etp12::handleException(process_cb);

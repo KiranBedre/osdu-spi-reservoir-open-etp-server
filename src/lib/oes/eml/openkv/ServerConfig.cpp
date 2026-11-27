@@ -208,46 +208,20 @@ etp12::ServerConfig makeServerConfig(
 
             case auth::AuthType::eBasic:
                 auth_type = "BASIC";
-                OES_DEBUG(
-                    "Basic Auth: {}", details.basic_decoded_
-                );
                 break;
 
             case auth::AuthType::eBearer:
                 auth_type = "JWT";
-                OES_DEBUG(
-                    "JWT Auth:\n\tHeader: {}\n\tPayload: {}",
-                    details.jwt_header_, oes::core::StringUtils::abbreviate(details.jwt_payload_)
-                );
                 break;
 
             case auth::AuthType::eOsduToken:
                 auth_type = "OSDU";
-                OES_DEBUG(
-                    "OSDU Auth:\n\tHeader: {}",
-                    oes::core::StringUtils::abbreviate(shaker.authorization_)
-                );
                 break;
 
                 // no default on purpose
             }
 
-            // const std::string& connectivity_mode = server_config_ptr->connectivityMode();
-            // if(connectivity_mode.empty()) {
-            //     throw std::runtime_error("Connection mode unknown.");
-            // }
-
-            // if (connectivity_mode == "standalone") {
-            //     OES_DEBUG(
-            //         "Auth: {}\n\tusername: {}\n\tpassword: {}",
-            //         auth_type, user.name_, user.pswd_
-            //     );
-            // } else {
-            //     OES_DEBUG(
-            //         "Auth: {}\n\tname: {}",
-            //         auth_type, user.name_
-            //     );
-            // }
+            OES_DEBUG("Authentication type: {}", auth_type);
         }
 
         return user_ptr;

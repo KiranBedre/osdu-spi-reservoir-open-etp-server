@@ -37,7 +37,8 @@ enum class EntitlementDSType: unsigned short {
     eBase,
     eGroups,
     ePolicy,
-    ePolicyBulk
+    ePolicyBulk,
+    eGroupsBulk
 };
 
 /**
@@ -127,6 +128,33 @@ using EntitlementDataspaceGroups_ptr = std::shared_ptr<EntitlementDataspaceGroup
 
 EntitlementDataspaceGroups_ptr dataspaceGroups_factory(const std::string& uid, const std::string& path,
         const std::vector<std::string>& legal_tags, const std::vector<std::string>& legal_countries);
+
+/**
+ * EntitlementDataspaceGroupsBulk: fetches the storage records of several dataspaces at once,
+ * by listing all the records of the dataspace kind (paginated).
+*/
+class OES_OSDU_EXPORT EntitlementDataspaceGroupsBulk: public EntitlementDataspace {
+public:
+    EntitlementDataspaceGroupsBulk();
+    explicit EntitlementDataspaceGroupsBulk(std::vector<EntitlementDataspaceGroups_ptr> dataspaces);
+
+    std::string idForQuery(const EntitlementConfigBase& config_osdu) const override;
+
+    std::string queryParams(const EntitlementConfigBase& config_osdu, const std::string& cursor) const;
+    std::unordered_map<std::string, size_t> indexById(const EntitlementConfigBase& config_osdu) const;
+
+    // Fills the groups of the matched dataspaces and sets found; cursor is cleared on the last page
+    bool deserialize(
+        const std::string& res_body,
+        const std::unordered_map<std::string, size_t>& index_by_id,
+        std::vector<bool>& found,
+        std::string& cursor) const;
+
+    static const size_t PAGE_SIZE;
+
+    std::vector<EntitlementDataspaceGroups_ptr> dataspaces_;
+};
+using EntitlementDataspaceGroupsBulk_ptr = std::shared_ptr<EntitlementDataspaceGroupsBulk>;
 
 // -- 
 

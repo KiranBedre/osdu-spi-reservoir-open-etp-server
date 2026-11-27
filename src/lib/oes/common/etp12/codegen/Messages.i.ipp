@@ -2,7 +2,7 @@
 // WARNING: DO NOT EDIT: SharedComponents/src/bin/etpgencpp Generated File
 
 // ============================================================================
-// Copyright 2018-2021 Emerson Paradigm Holding LLC. All rights reserved.
+// Copyright 2018-2026 Emerson Paradigm Holding LLC. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -1454,6 +1454,20 @@ CopyDataspaceFromRemote::CopyDataspaceFromRemote(
 }
 
 CopyDataspaceFromRemoteResponse::CopyDataspaceFromRemoteResponse(
+) : m_tableData(std::vector<Datatypes::Object::TableData>())
+{
+}
+
+CopyDataspaceToRemote::CopyDataspaceToRemote(
+) : m_action(std::string())
+  , m_dataspacePath(std::string())
+  , m_targetServer(Datatypes::Object::RemoteServer())
+  , m_extraData(std::map<std::string, std::string>())
+  , m_tableData(std::vector<Datatypes::Object::TableData>())
+{
+}
+
+CopyDataspaceToRemoteResponse::CopyDataspaceToRemoteResponse(
 ) : m_tableData(std::vector<Datatypes::Object::TableData>())
 {
 }
@@ -5579,6 +5593,48 @@ void CopyDataspaceFromRemoteResponse::decode(avro::Decoder& d) {
     avro::decode(d, m_tableData);
 }
 
+avro::ValidSchema CopyDataspaceToRemote::schema() {
+#ifndef OES_EML_ETP12_NO_AVRO_JSON
+    static const auto schema__(::oes::common::getValidSchemaOfType12(
+        "Energistics.Etp.v12.Protocol.DataspaceOSDU.CopyDataspaceToRemote"
+    ));
+    return schema__;
+#else
+    throw avro::Exception("Unsupported Operation in this build");
+#endif
+}
+void CopyDataspaceToRemote::encode(avro::Encoder& e) const {
+    avro::encode(e, m_action);
+    avro::encode(e, m_dataspacePath);
+    avro::encode(e, m_targetServer);
+    avro::encode(e, m_extraData);
+    avro::encode(e, m_tableData);
+}
+void CopyDataspaceToRemote::decode(avro::Decoder& d) {
+    avro::decode(d, m_action);
+    avro::decode(d, m_dataspacePath);
+    avro::decode(d, m_targetServer);
+    avro::decode(d, m_extraData);
+    avro::decode(d, m_tableData);
+}
+
+avro::ValidSchema CopyDataspaceToRemoteResponse::schema() {
+#ifndef OES_EML_ETP12_NO_AVRO_JSON
+    static const auto schema__(::oes::common::getValidSchemaOfType12(
+        "Energistics.Etp.v12.Protocol.DataspaceOSDU.CopyDataspaceToRemoteResponse"
+    ));
+    return schema__;
+#else
+    throw avro::Exception("Unsupported Operation in this build");
+#endif
+}
+void CopyDataspaceToRemoteResponse::encode(avro::Encoder& e) const {
+    avro::encode(e, m_tableData);
+}
+void CopyDataspaceToRemoteResponse::decode(avro::Decoder& d) {
+    avro::decode(d, m_tableData);
+}
+
 avro::ValidSchema GetDataspaceInfoResponse::schema() {
 #ifndef OES_EML_ETP12_NO_AVRO_JSON
     static const auto schema__(::oes::common::getValidSchemaOfType12(
@@ -5597,3 +5653,4 @@ void GetDataspaceInfoResponse::decode(avro::Decoder& d) {
 }
 
 } //      oes::common::etp12::Protocol::DataspaceOSDU
+

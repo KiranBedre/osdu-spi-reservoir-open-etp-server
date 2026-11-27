@@ -127,7 +127,7 @@ bool alt_etp12_server_info(const EmlAppContext& ctx) {
 
     if (!clt.cfg_.auth_hdr_.empty()) {
         headers.emplace_back("Authorization: " + clt.cfg_.auth_hdr_);
-        OES_DEBUG("Authorization: {}", StringUtils::abbreviate(clt.cfg_.auth_hdr_));
+        OES_DEBUG("Authorization header provided");
     }
 
     req_url = url + "/.well-known/etp-server-capabilities?GetVersions=true";
@@ -320,7 +320,7 @@ bool alt_osdu_platform_info(const EmlAppContext& ctx) {
     std::string oauthToken;
     if (!clt.cfg_.auth_hdr_.empty()) {
         oauthToken = clt.cfg_.auth_hdr_;
-        ctx.dbg() << "Authorization: " << StringUtils::abbreviate(clt.cfg_.auth_hdr_) << std::endl;
+        ctx.dbg() << "Authorization header provided" << std::endl;
     } else {
         ctx.err() << "Error: OSDU principal_token not found." << std::endl;
         return false;

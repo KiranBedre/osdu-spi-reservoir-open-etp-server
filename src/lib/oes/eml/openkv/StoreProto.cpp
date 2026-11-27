@@ -29,7 +29,9 @@
 #include "AuditLog.h"
 
 #include <oes/core/utils/Assert.h>
+#include <oes/core/utils/ChronoUtils.h>
 #include <oes/core/utils/Logger.h>
+#include <oes/core/utils/String.h>
 #include <oes/core/utils/ThreadUtils.hpp>
 #include <oes/core/utils/Otel.h>
 
@@ -48,6 +50,7 @@
 #include <oes/core/utils/MetricsNames.h>
 
 #include <chrono>
+#include <unordered_map>
 
 using oes::common::etp12::Datatypes::Object::DataObject;
 using oes::common::etp12::Datatypes::EINVALID_ARGUMENT;
@@ -89,13 +92,11 @@ const std::set<std::string> ignored_types_in_imports = {
     "LocalTime3dCrs"
 };
 
-//! ETP type of a scanned data object, e.g. "resqml20.obj_Grid2dRepresentation".
-std::string etp_type_of(const FilePart::ScanData& scan) {
-    std::string type_name = scan.name_.local_name_;
-    if(!scan.name_.xsi_type_.empty()){
-        type_name = scan.name_.xsi_type_.substr(scan.name_.xsi_type_.find(':')+1);
-    }
-
+//! ML token of a scanned data object, e.g. "resqml20", in the same
+//! "<ml><major><minor>" shape as DataObjectReference::QualifiedType_.
+//! Built from the root element's namespace and schemaVersion; whether the
+//! token is one the store supports is decided by EmlUri::parseML().
+std::string ml_token_of(const FilePart::ScanData& scan) {
     std::string ml = "resqml";
     if(boost::ends_with(scan.name_.xmlns_uri_,"commonv2")){
         ml = "eml";
@@ -104,11 +105,70 @@ std::string etp_type_of(const FilePart::ScanData& scan) {
     }else if(boost::ends_with(scan.name_.xmlns_uri_,"witsmlv2")){
         ml = "witsml";
     }
-
-    // Same "<ml><major><minor>.<type>" shape as DataObjectReference::QualifiedType_
     const std::string& version = scan.name_.schema_version_;
     ml += (version.size() > 2) ? std::string{version[0], version[2]} : std::string("20");
-    return EmlUri::canonicalType(ml + '.' + type_name);
+    return ml;
+}
+
+//! ETP type of a scanned data object, e.g. "resqml20.obj_Grid2dRepresentation".
+std::string etp_type_of(const FilePart::ScanData& scan) {
+    std::string type_name = scan.name_.local_name_;
+    if(!scan.name_.xsi_type_.empty()){
+        type_name = scan.name_.xsi_type_.substr(scan.name_.xsi_type_.find(':')+1);
+    }
+    return EmlUri::canonicalType(ml_token_of(scan) + '.' + type_name);
+}
+
+//! Empty when iso_date is empty or a valid ISO 8601 date-time, otherwise the
+//! EINVALID_OBJECT message for the Citation element `what`.
+std::string citation_date_error(const char* what, const std::string& iso_date) {
+    std::chrono::microseconds usec(0);
+    if (iso_date.empty() || oes::core::usecSinceEpochFromExtendedIsoDateTime(iso_date, usec)) {
+        return {};
+    }
+    return fmt::format(
+        "Invalid Citation/{} '{}' (expected an ISO 8601 date-time such as 2024-01-31T12:00:00Z)",
+        what, iso_date
+    );
+}
+
+//! Per-object acceptance checks shared by the PutDataObjects paths, run after a
+//! successful scan and before anything is written. Returns an empty string when
+//! the object is acceptable, otherwise the EINVALID_OBJECT message to report.
+//! Rejects here what would otherwise trip an assert() deeper in SpaceWriter
+//! (malformed Citation dates) or leave an object the store cannot address
+//! again (namespace + schemaVersion outside EmlUri::ML).
+std::string validate_scanned_object(const FilePart::ScanData& scan, const Guid& uid) {
+    const auto& name = scan.name_;
+    const auto& cited = scan.cited_;
+
+    if (!uid.isValid()) {
+        return fmt::format(
+            "Invalid UUID '{}' on root element <{}>", cited.uuid_, name.qualified_name_
+        );
+    }
+
+    const std::string ml = ml_token_of(scan);
+    const EmlUri::ML parsed_ml = EmlUri::parseML(ml.c_str(), ml.size());
+    if (parsed_ml == EmlUri::eNO_ML || parsed_ml == EmlUri::eUNKNOWN_ML) {
+        return fmt::format(
+            "Unsupported data object type: namespace '{}' schemaVersion '{}' type '{}' "
+            "(supported: eml20, eml23, resqml20, resqml22, witsml21, prodml22, prodml23)",
+            name.xmlns_uri_, name.schema_version_, name.local_name_
+        );
+    }
+
+    if (auto why = citation_date_error("Creation", cited.Creation_); !why.empty()) {
+        return why;
+    }
+    return citation_date_error("LastUpdate", cited.LastUpdate_);
+}
+
+//! EINVALID_OBJECT message for a failed FilePart::scanData().
+std::string scan_error_message(const FilePart::ScanData& scan) {
+    return scan.error_.empty()
+        ? std::string("Cannot parse XML")
+        : fmt::format("Cannot parse XML: {}", scan.error_);
 }
 
 //! EML 2.0 names the external part by uuid, EML 2.3 by URI; a file name means the owner itself.
@@ -249,7 +309,8 @@ void upsertObjs(
     const std::vector<
         const std::map<std::string, DataObject>::value_type*
     >& entries,
-    TransactionActControl* trans_ctl_ptr
+    TransactionActControl* trans_ctl_ptr,
+    const size_t bulk_size
 ) {
 
     // cppcheck-suppress unreadVariable
@@ -278,13 +339,13 @@ void upsertObjs(
         );
 
         if (scan_rc != FilePart::eOK_DONE) {
-            reply.addError(cid, EINVALID_OBJECT, "Cannot parse XML");
+            reply.addError(cid, EINVALID_OBJECT, scan_error_message(scan));
             continue;
         }
 
         Guid uid = Guid::parse(scan.cited_.uuid_);
-        if (!uid.isValid()) {
-            reply.addError(cid, EINVALID_OBJECT, "Invalid UUID");
+        if (const std::string why = validate_scanned_object(scan, uid); !why.empty()) {
+            reply.addError(cid, EINVALID_OBJECT, why);
             continue;
         }
 
@@ -321,7 +382,7 @@ void upsertObjs(
 
         // Convert extracted XML refs, to OpenKV refs
         for (const auto& xml_ref : scan.refs_) {
-            // the ref's target is not resolved now, but in .insert_rel() later below
+            // the ref's target is not resolved now, but in .bulk_insert_rels() later below
             refs.emplace_back(w.to_obj_ref(obj_id, xml_ref.first, xml_ref.second));
         }
 
@@ -377,18 +438,9 @@ void upsertObjs(
         std::string("SpaceWriter.") + __func__ + ".insertRels",
         {{"count", std::to_string(refs.size())}});
     
-    if( refs.size() < 50 ) {
-        // There are less refs to be inserted than the bulk beffer size, send them one by one.
-        for (const ObjRef& ref : refs) {
-            // errors (i.e. missing refs) are tracked inside the writer,
-            // and calling-code checks missing_reference_count(), no need
-            // to track insert_rel()'s returned code.
-            w.insert_rel(ref);
-        }
-    } else {
-        // Attempt to insert by bulk statements to improve performances.
-        w.bulk_insert_rels(refs, 50);
-    }   
+    // errors (i.e. missing refs) are tracked inside the writer,
+    // and calling-code checks missing_reference_count().
+    w.bulk_insert_rels(refs, bulk_size);
 }
 
 void bulkUpsertObjs(
@@ -465,15 +517,16 @@ void bulkUpsertObjs(
         );
 
         if (scan_rc != FilePart::eOK_DONE) {
+            const std::string why = scan_error_message(pe.scan);
             parsed_entries.pop_back();
-            reply.addError(cid, EINVALID_OBJECT, "Cannot parse XML");
+            reply.addError(cid, EINVALID_OBJECT, why);
             continue;
         }
 
         Guid uid = Guid::parse(pe.scan.cited_.uuid_);
-        if (!uid.isValid()) {
+        if (const std::string why = validate_scanned_object(pe.scan, uid); !why.empty()) {
             parsed_entries.pop_back();
-            reply.addError(cid, EINVALID_OBJECT, "Invalid UUID");
+            reply.addError(cid, EINVALID_OBJECT, why);
             continue;
         }
 
@@ -707,7 +760,7 @@ void bulkUpsertObjs(
         obj_ids,
         typ_ids,
         guids,
-        bulk_size // change to 50
+        bulk_size
     );
 
     // PHASE 4: Collect and bulk insert all references
@@ -717,7 +770,7 @@ void bulkUpsertObjs(
 
         // Convert extracted XML refs, to OpenKV refs
         for (const auto& xml_ref : entry_proc.scan.refs_) {
-            // the ref's target is not resolved now, but in .insert_rel() later below
+            // the ref's target is not resolved now, but in .bulk_insert_rels() later below
             refs.emplace_back(w.to_obj_ref(obj_id, xml_ref.first, xml_ref.second));
         }
     }
@@ -1105,7 +1158,7 @@ void OpenKVStore::GetDataObjects( // messageTypeId 1
                     ids.emplace_back(stored_uid(uri));
                 }
             }
-            const std::map<TypedUid, eml_int64> ml_ids = reader.containing_dataspace_ids(ids);
+            const std::map<TypedUid, eml_int64> ml_ids = reader.containing_dataspace_ids(ids, session->pg_bulk_size_);
             std::map<eml_int64,std::string> id2ds;
             for(const ObjNK& nk : nks){
                 std::string i_uri= std::get<2>(nk)->second;
@@ -1446,7 +1499,7 @@ void OpenKVStore::GetDataObjectsBULK( // messageTypeId 1
                 }
             }
 
-            const std::map<TypedUid, eml_int64> ml_ids = reader.containing_dataspace_ids(ids); //TODO optimize it?
+            const std::map<TypedUid, eml_int64> ml_ids = reader.containing_dataspace_ids(ids, BULK_SIZE); //TODO optimize it?
             std::map<eml_int64,std::string> id2ds;
             
             for (size_t i{0}; i < nks.size(); ++i) {
@@ -1826,7 +1879,7 @@ void OpenKVStore::PutDataObjectsImpl(
             // This may lead to interleaved pages for obj and ary tables.
             // Accumulate arys to update instead, to do it in one go afterwards???
             upsertObjs(
-                reply, *writer, *p_orphan_arys, *p_missing_arys, obj_entries, ctl_ptr
+                reply, *writer, *p_orphan_arys, *p_missing_arys, obj_entries, ctl_ptr, BULK_SIZE
             );
         }
 
@@ -1852,15 +1905,17 @@ void OpenKVStore::PutDataObjectsImpl(
                 }
             }
             if (auto N = writer->missing_reference_count()) {
-                const std::string& error_str = fmt::format(
-                    "{} Missing reference(s) in space {}", N, space.uid_
-                ); 
-                const std::vector<ReferenceInfo>& missing_refs = writer->get_references_infos();
-                for (const auto& ref : missing_refs) {
-                    OES_ERROR(
-                        "Missing reference without transaction: {}", ref.to_string()
-                    );
+                // Echo the from -> to pairs (capped) in the ProtocolException,
+                // not only in the server log, same as the transaction commit path.
+                std::vector<std::string> listed;
+                for (const auto& ref : writer->get_references_infos()) {
+                    listed.push_back(ref.to_string());
+                    OES_ERROR("Missing reference without transaction: {}", listed.back());
                 }
+                const std::string error_str = fmt::format(
+                    "{} Missing reference(s) in space {}: {}",
+                    N, space.uid_, oes::core::StringUtils::joinCapped(listed, "; ", kMaxListedInError)
+                );
 
                 // Audit log: Missing references
                 AuditLog::log(
@@ -1879,7 +1934,7 @@ void OpenKVStore::PutDataObjectsImpl(
         }
 
         if (local_tx.isLocal() && session->check_activities_ && ctl_ptr != nullptr) {
-            if(ctl_ptr->upsertActivityObjs(*writer, session->userName(), entry.first)) {
+            if(ctl_ptr->upsertActivityObjs(*writer, session->userName(), entry.first, BULK_SIZE, session->stable_import_activity_uuid_)) {
                 writer->delete_null_res();
             }
             local_tx.get_trans_control()->erase(entry.first);
@@ -1939,8 +1994,10 @@ void OpenKVStore::PutDataObjectsImpl(
                 "Exception occurred during PutDataObjects"
             );
         }
+    } catch (const std::exception& ex) {
+        OES_ERROR("Failed to audit PutDataObjects failure: {}", ex.what());
     } catch (...) {
-        // Ignore audit log errors
+        OES_ERROR("Failed to audit PutDataObjects failure: unknown exception");
     }
     // On error - increment error counter
     oes::core::MetricsHelper::updateCounterMetric(oes::core::metrics::STORE_OPS_COUNTER_PUT_ERROR);
@@ -2106,46 +2163,30 @@ void OpenKVStore::DeleteDataObjects( // messageTypeId 3
 
         auto& w = *writer;
 
-        // Nullify the guid of the resource to delete it later
-        std::vector<std::pair<int, oes::core::Guid> > batch ;
-        std::unordered_map<std::string, std::pair<std::string, std::string> > cids ;
+        // Nullify the guids of the resources, delete_null_res() deletes them
+        std::vector<int> typ_ids;
+        std::vector<oes::core::Guid> guids;
+        std::vector<int> indexes;
         for (const Entry* uri_entry : uri_entries) {
-            const std::string& cid = uri_entry->first;
-            const std::string& uri_str = uri_entry->second;
-            EmlUri uri = EmlUri::parse(uri_str);
+            EmlUri uri = EmlUri::parse(uri_entry->second);
             assert(uri.isObj());
 
             const eml_int64 uri_id = ml_id(w, uri.ml_);
-            const int typ_id = w.typ_of(uri_id, uri.obj_type_);
-
-            if (uri_entries.empty()) {
-                // Less than 0 objects to delete, do it one by one.
-                if (w.null_res_guid(typ_id, uri.guid_)) {
-                    auto it_ary = reply.addMapPart(cid);
-                    auto& ary = it_ary.first->second;
-                    ary.m_values.push_back(uri_str);
-                }else{
-                    reply.addError(cid, ENOT_FOUND, "Object not Found");
-                }
-            } else {
-                // delete in a single batch to minimize the number of queries.
-                batch.emplace_back(std::make_pair( typ_id, uri.guid_)) ;
-                cids[uri.guid_.toXmlString()] = {cid, uri_str} ;
-            }
+            indexes.push_back(static_cast<int>(typ_ids.size()));
+            typ_ids.push_back(w.typ_of(uri_id, uri.obj_type_));
+            guids.push_back(uri.guid_);
         }
 
-        if (!batch.empty()) {
-            auto results = w.delete_objects(batch) ;
-            for (const auto& [obj_id, typ_id, uid]: results) {
-                if ( obj_id == -1) {
-                    reply.addError(cids[uid.toXmlString()].first, ENOT_FOUND, "Object not Found");
-                    continue ;
-                }
-                const auto key = uid.toXmlString();
-                auto it_ary = reply.addMapPart(cids[key].first);
-                auto& ary = it_ary.first->second;
-                ary.m_values.push_back(cids[key].second);
+        const std::vector<eml_int64> old_ids = w.bulk_null_res_guids(typ_ids, guids, indexes, session->pg_bulk_size_);
+        for (size_t i = 0; i < uri_entries.size(); ++i) {
+            const std::string& cid = uri_entries[i]->first;
+            if (old_ids.at(i) == -1) {
+                reply.addError(cid, ENOT_FOUND, "Object not Found");
+                continue;
             }
+            auto it_ary = reply.addMapPart(cid);
+            auto& ary = it_ary.first->second;
+            ary.m_values.push_back(uri_entries[i]->second);
         }
 
         // Check if the session has not been terminated, since above call can take time
@@ -2159,6 +2200,35 @@ void OpenKVStore::DeleteDataObjects( // messageTypeId 3
         // They are remembered (and cleared!) by the TX-wide writer.
         // But w/o one, we error out immediately.
         if (local_tx.isLocal()) {
+            // Refuse (with a readable reason, not a raw FK violation) while a
+            // live object still references what is being deleted.
+            if (const auto blocking = w.select_blocking_refs(kMaxListedInError); !blocking.empty()) {
+                std::unordered_map<eml_int64, std::string> uri_of_id;
+                for (size_t i = 0; i < old_ids.size(); ++i) {
+                    uri_of_id.emplace(old_ids[i], uri_entries[i]->second);
+                }
+                std::vector<std::string> listed;
+                for (const auto& [dst_id, src] : blocking) {
+                    listed.push_back(fmt::format("{} is referenced by {}", uri_of_id[dst_id], src));
+                }
+                const std::string error_str = fmt::format(
+                    "Cannot delete, still referenced in space {}: {} "
+                    "(delete or update the referencing object(s) first, or do both in one transaction)",
+                    space.uid_, oes::core::StringUtils::join(listed, "; ")
+                );
+                span.setError(error_str);
+                AuditLog::log(
+                    *repo_->getServerConfig(),
+                    session,
+                    AuditLogConstants::OP_DELETE_DATA_OBJECTS,
+                    AuditLogConstants::RESULT_FAILURE,
+                    AuditLogConstants::ACTION_DELETE,
+                    space.uid_,
+                    error_str
+                );
+                oes::core::MetricsHelper::updateCounterMetric(oes::core::metrics::STORE_OPS_COUNTER_DELETE_ERROR);
+                return reply.fatalError(EINVALID_STATE, error_str); // local_tx rolls back
+            }
             w.delete_null_res();
             if(repo_->updateSpaceInfo(space)){
                 session = session_.lock().get();
@@ -2246,8 +2316,10 @@ void OpenKVStore::DeleteDataObjects( // messageTypeId 3
                 "Exception occurred during DeleteDataObjects"
             );
         }
+    } catch (const std::exception& ex) {
+        OES_ERROR("Failed to audit DeleteDataObjects failure: {}", ex.what());
     } catch (...) {
-        // Ignore audit log errors
+        OES_ERROR("Failed to audit DeleteDataObjects failure: unknown exception");
     }
     // On error - increment error counter
     oes::core::MetricsHelper::updateCounterMetric(oes::core::metrics::STORE_OPS_COUNTER_DELETE_ERROR);

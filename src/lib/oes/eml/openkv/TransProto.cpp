@@ -135,9 +135,8 @@ void OpenKVTransProto::StartTransaction(
     try {
         newTx(req.m_readOnly, std::move(req.m_message), std::move(txSpaceUris), false );
     } catch (const oes::postgresql::PostgreSQLException& ex) {
-        rc = errorStatus(EINVALID_STATE, fmt::format(
-            "Cannot start Transaction: {}", ex.what()
-        ));
+        OES_ERROR("Cannot start transaction: {}", ex.what());
+        rc = errorStatus(EINVALID_STATE, "Cannot start transaction");
         oes::core::MetricsHelper::updateCounterMetric(oes::core::metrics::TRANSACTION_OPS_COUNTER_START_ERROR);
         return process_cb(rc, std::move(resp));
     }
@@ -216,6 +215,22 @@ void OpenKVTransProto::CommitTransaction(
                 ErrorInfo err;
                 auto writer = repo_->getSpaceWriter(space, err);
                 if (writer) {
+                    // A readable refusal instead of a raw rel_dst_id_fkey violation
+                    // when a live object still references an object deleted in this tx.
+                    if (const auto blocking = writer->select_blocking_refs(); !blocking.empty()) {
+                        std::vector<std::string> listed;
+                        for (const auto& [dst_id, src] : blocking) {
+                            listed.push_back(src);
+                        }
+                        resp.m_successful = false;
+                        resp.m_failureReason = fmt::format(
+                            "Cannot delete in space {}: deleted object(s) still referenced by {}",
+                            space.uid_, core::StringUtils::join(listed, "; ")
+                        );
+                        rc.ok = true;
+                        oes::core::MetricsHelper::updateCounterMetric(oes::core::metrics::TRANSACTION_OPS_COUNTER_COMMIT_ERROR);
+                        return process_cb(std::move(rc), std::move(resp));
+                    }
                     writer->delete_null_res();
                 }
             }
@@ -241,7 +256,7 @@ void OpenKVTransProto::CommitTransaction(
                         OES_ERROR("Could not get writer for dataspace {}", space_uri);
                         continue;
                     }
-                    if(ctl.upsertActivityObjs(*writer, session->userName(), space_uri)) {
+                    if(ctl.upsertActivityObjs(*writer, session->userName(), space_uri, session->pg_bulk_size_, session->stable_import_activity_uuid_)) {
                         writer->delete_null_res();
                     }
                 }
@@ -255,6 +270,10 @@ void OpenKVTransProto::CommitTransaction(
             size_t missing_ref_count = 0;
             size_t orphan_rel_count = 0;
             std::vector<std::string> missing_containers;
+            // Collect missing-reference descriptions across all per-space writers
+            // so the 412 failure reason can echo actionable detail (capped)
+            // instead of the opaque count-only "N Missing reference(s)".
+            std::vector<std::string> missing_refs_listed;
             for (auto& [space_uid, w] : tx->spaceUid_spaceWriter_map_) {
                 // Each writer queries its own dataspace schema
                 Space space = repo_->findSpaceInfo(space_uid);
@@ -265,25 +284,27 @@ void OpenKVTransProto::CommitTransaction(
                 }
 
                 if (auto N = w->missing_reference_count()) {
-                    // List the missing references in error log
-                    const std::vector<ReferenceInfo>& missing_refs = w->get_references_infos();
-                    for (const auto& ref : missing_refs) {
-                        OES_ERROR(
-                            "Missing reference in transaction: {}", ref.to_string()
-                        );
+                    // List the missing references in error log AND echo them in
+                    // the failure reason (capped) so the client receives detail.
+                    for (const auto& ref : w->get_references_infos()) {
+                        missing_refs_listed.push_back(ref.to_string());
+                        OES_ERROR("Missing reference in transaction: {}", missing_refs_listed.back());
                     }
                     missing_ref_count += N;
                 }
                 orphan_rel_count += w->orphan_relation_count();
 
-                for (auto& container : w->check_pending_ary_containers()) {
+                for (auto& container : w->check_pending_ary_containers(space_uid)) {
                     missing_containers.push_back(std::move(container));
                 }
             }
 
             if (missing_ref_count) {
                 resp.m_successful = false;
-                resp.m_failureReason = fmt::format("{} Missing reference(s)", missing_ref_count);
+                resp.m_failureReason = fmt::format(
+                    "{} Missing reference(s): {}",
+                    missing_ref_count, core::StringUtils::joinCapped(missing_refs_listed, "; ", kMaxListedInError)
+                );
                 rc.ok = true;
                 oes::core::MetricsHelper::updateCounterMetric(oes::core::metrics::TRANSACTION_OPS_COUNTER_COMMIT_ERROR);
                 return process_cb(std::move(rc), std::move(resp));
@@ -298,7 +319,7 @@ void OpenKVTransProto::CommitTransaction(
             }
 
             if(!missing_containers.empty()) {
-                rc = errorStatus(EINVALID_STATE, fmt::format("Missing array container(s): {}", oes::core::StringUtils::join(missing_containers, ", ")));
+                rc = errorStatus(EINVALID_STATE, SpaceWriter::missing_ary_containers_message(missing_containers));
                 oes::core::MetricsHelper::updateCounterMetric(oes::core::metrics::TRANSACTION_OPS_COUNTER_COMMIT_ERROR);
                 return process_cb(std::move(rc), std::move(resp));
             }
@@ -369,9 +390,7 @@ void OpenKVTransProto::CommitTransaction(
     } catch (const oes::postgresql::PostgreSQLException& ex) {
         AuditLog::log(*repo_->getServerConfig(), session, AuditLogConstants::OP_COMMIT_TRANSACTION, AuditLogConstants::RESULT_FAILURE, AuditLogConstants::ACTION_EXECUTE, req_tx_uid.toXmlString(), fmt::format("Transaction {} commit failed: Cannot COMMIT Transaction: {}", req_tx_uid.toXmlString(), ex.what()));
         resp.m_successful = false;
-        resp.m_failureReason = fmt::format(
-            "Cannot COMMIT Transaction: {}", ex.what()
-        );
+        resp.m_failureReason = "Transaction commit failed";
         // Note that we do NOT session_.resetTx(), meaning that the client
         // can decide to RollbackTransaction(), or do more PUTs and retry
         // CommitTransaction perhaps.
@@ -449,9 +468,7 @@ void OpenKVTransProto::RollbackTransaction(
     } catch (const oes::postgresql::PostgreSQLException& ex) {
         AuditLog::log(*repo_->getServerConfig(), session, AuditLogConstants::OP_ROLLBACK_TRANSACTION, AuditLogConstants::RESULT_FAILURE, AuditLogConstants::ACTION_EXECUTE, req_tx_uid.toXmlString(), fmt::format("Transaction {} rollback failed: Cannot ROLLBACK Transaction: {}", req_tx_uid.toXmlString(), ex.what()));
         resp.m_successful = false;
-        resp.m_failureReason = fmt::format(
-            "Cannot ROLLBACK Transaction: {}", ex.what()
-        );
+        resp.m_failureReason = "Transaction rollback failed";
     }
 
     // unlike in CommitTransaction, on RollbackTransaction we always

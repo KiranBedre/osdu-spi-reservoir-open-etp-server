@@ -48,6 +48,12 @@ using oes::common::etp12::Datatypes::Object::Resource;
 using ::oes::common::etp12::ApiType;
 constexpr int nApiType = static_cast<int>(ApiType::eMisc) + 1;
 
+// Auto-import Activity generation is governed by the --check-activities server
+// option (Session::check_activities_), fixed at startup. By default each import
+// appends a new Activity (random UUID). With --stable-import-activity-uuid the
+// Activity gets a name-based (v5) UUID derived from its sorted output object
+// UUIDs, so re-importing the same object set replaces the Activity instead.
+
 // TransactionActControl: is a class to hold some object data to be processed later
 class OES_EML_EXPORT TransactionActControl {
 public:
@@ -96,7 +102,7 @@ public:
     std::unordered_map<std::string, std::set<std::string>> activities_template_; // key is uuid and value is list of titles (OUTPUT_ONLY)
     std::unordered_map<std::string, std::set<std::string>> db_activities_template_; // key is uuid and value is list of titles (OUTPUT_ONLY)
 
-    bool upsertActivityObjs(SpaceWriter& writer, const std::string& user_id, const std::string& space_uri);
+    bool upsertActivityObjs(SpaceWriter& writer, const std::string& user_id, const std::string& space_uri, size_t bulk_size, bool stable_uuid = false);
 
     static const std::string import_activity_template_uuid_;
     static const std::string import_activity_template_title_;
@@ -105,7 +111,7 @@ public:
     bool has_import_template_already_ = false;
 private:
     using ObjMapVal_t = std::map<std::string, oes::common::etp12::Datatypes::Object::DataObject>::value_type;
-    std::vector<ObjMapVal_t> get_activities_to_put(SpaceWriter& writer, const std::string& cid);
+    std::vector<ObjMapVal_t> get_activities_to_put(SpaceWriter& writer, const std::string& cid, bool stable_uuid);
 
     static void fill_resource_(
         Resource& res,
@@ -188,6 +194,9 @@ struct [[nodiscard]] OES_EML_EXPORT OpenKVScopedTxApi {
 
 //============================================================================
 
+// A dataspace pushed into this server by CopyDataspaceToRemote, defined in SpaceOSDUProto.cpp
+struct DataspaceIngest;
+
 struct OES_EML_EXPORT OpenKVSession : etp12::Session
 {
     // Cache of dataspaces
@@ -196,6 +205,9 @@ struct OES_EML_EXPORT OpenKVSession : etp12::Session
     std::map<int64_t, PutDataObjects> pending_put_data_objects_; // Pending PutDataObjects with Chunks
 
     std::shared_ptr<OpenKVTransaction> tx_;
+
+    // Lives from the "prepare" to the "commit" of a push, in tx_; declared after tx_ to be destroyed before it
+    std::shared_ptr<DataspaceIngest> space_ingest_;
 
     OpenKVSession(
         etp12::Handshake handshake = {},

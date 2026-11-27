@@ -6054,6 +6054,74 @@
       "depends": [
         "Energistics.Etp.v12.Datatypes.Object.TableData"
       ]
+    },
+    {
+      "type": "record",
+      "namespace": "Energistics.Etp.v12.Protocol.DataspaceOSDU",
+      "name": "CopyDataspaceToRemote",
+      "protocol": "2424",
+      "messageType": "11",
+      "senderRole": "customer",
+      "protocolRoles": "store,customer",
+      "multipartFlag": false,
+      "fields": [
+        {
+          "name": "action",
+          "type": "string"
+        },
+        {
+          "name": "dataspacePath",
+          "type": "string"
+        },
+        {
+          "name": "targetServer",
+          "type": "Energistics.Etp.v12.Datatypes.Object.RemoteServer"
+        },
+        {
+          "name": "extraData",
+          "type": {
+            "type": "map",
+            "values": "string"
+          }
+        },
+        {
+          "name": "tableData",
+          "type": {
+            "type": "array",
+            "items": "Energistics.Etp.v12.Datatypes.Object.TableData"
+          },
+          "default": []
+        }
+      ],
+      "fullName": "Energistics.Etp.v12.Protocol.DataspaceOSDU.CopyDataspaceToRemote",
+      "depends": [
+        "Energistics.Etp.v12.Datatypes.Object.RemoteServer",
+        "Energistics.Etp.v12.Datatypes.Object.TableData"
+      ]
+    },
+    {
+      "type": "record",
+      "namespace": "Energistics.Etp.v12.Protocol.DataspaceOSDU",
+      "name": "CopyDataspaceToRemoteResponse",
+      "protocol": "2424",
+      "messageType": "12",
+      "senderRole": "store",
+      "protocolRoles": "store,customer",
+      "multipartFlag": true,
+      "fields": [
+        {
+          "name": "tableData",
+          "type": {
+            "type": "array",
+            "items": "Energistics.Etp.v12.Datatypes.Object.TableData"
+          },
+          "default": []
+        }
+      ],
+      "fullName": "Energistics.Etp.v12.Protocol.DataspaceOSDU.CopyDataspaceToRemoteResponse",
+      "depends": [
+        "Energistics.Etp.v12.Datatypes.Object.TableData"
+      ]
     }
   ]
 }

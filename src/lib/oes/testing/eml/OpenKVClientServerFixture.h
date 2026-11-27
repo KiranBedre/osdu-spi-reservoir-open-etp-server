@@ -46,7 +46,7 @@ public:
 
     // What you can edit to control the server behavior:
     // - openkv_folder_ and/or admin_db_name_ for where backend stores DBs
-    // - svr_conf_ for the server's configuration, i.e. max_mgs_size_
+    // - configureServer() to customize svr_conf_ after its defaults are set
     virtual void initServer();
     bool directImport(std::string epc, std::string space_path);
     virtual void clearImports();
@@ -61,6 +61,8 @@ private:
     void shutdownServer();
 
 protected:
+    virtual void configureServer();
+
     oes::eml::openkv::OpenKVAdminDB_ptr admin_db_;
     oes::eml::openkv::DbConnectionPool_ptr connection_pool_;
 
