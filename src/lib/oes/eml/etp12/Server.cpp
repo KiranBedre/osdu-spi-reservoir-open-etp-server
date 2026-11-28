@@ -302,16 +302,13 @@ void CoreProtoImpl::RequestSession(
     } catch (proto12::ProtocolException& ex) {
         rc.ex = std::move(ex);
     } catch (const std::exception& ex) {
+        OES_ERROR("Unexpected exception while starting Session({}): {}", session->id(), ex.what());
         Datatypes::ErrorInfo info;
         info.m_code = data12::EINVALID_STATE;
-        info.m_message = "Generic Exception: ";
-        if (const char* msg = ex.what()) {
-            info.m_message += msg;
-        } else {
-            info.m_message += "no message";
-        }
+        info.m_message = "Server error";
         rc.ex.m_error = std::move(info);
     } catch (...) {
+        OES_ERROR("Unknown exception while starting Session({})", session->id());
         Datatypes::ErrorInfo info;
         info.m_code = data12::EINVALID_STATE;
         info.m_message = "Unknown Exception!";
@@ -367,16 +364,13 @@ void CoreProtoImpl::Authorize(
     } catch (proto12::ProtocolException& ex) {
         rc.ex = std::move(ex);
     } catch (const std::exception& ex) {
+        OES_ERROR("Unexpected exception while authorizing Session({}): {}", session->id(), ex.what());
         Datatypes::ErrorInfo info;
         info.m_code = data12::EINVALID_STATE; // what else?
-        info.m_message = "Generic Exception: ";
-        if (const char* msg = ex.what()) {
-            info.m_message += msg;
-        } else {
-            info.m_message += "no message";
-        }
+        info.m_message = "Server error";
         rc.ex.m_error = std::move(info);
     } catch (...) {
+        OES_ERROR("Unknown exception while authorizing Session({})", session->id());
         Datatypes::ErrorInfo info;
         info.m_code = data12::EINVALID_STATE; // what else?
         info.m_message = "Unknown Exception!";
@@ -1460,7 +1454,7 @@ bool Impl::on_validate(ws_conn_hdl_t hdl) {
         OES_DEBUG("SVR\tetp-encoding: {}", shaker.etp_encoding_);
     }
     if (!shaker.authorization_.empty()) {
-        OES_DEBUG("SVR\tAuthorization: {}", oes::core::StringUtils::abbreviate(shaker.authorization_));
+        OES_DEBUG("SVR\tAuthorization header provided");
     }
 
     RequestHeaderGetter getter = [&conn](std::string header) {
@@ -1976,19 +1970,32 @@ void Impl::on_http(ws_conn_hdl_t hdl) {
     }
 
     if (uri == "/refresh-partitions") {
-        // If AuthN is delegated, allow this critical call only if this is a service request.
-        if(!this->config_->authn_delegate_url_.empty() ) {
-            const auto http_client_ptr = std::make_shared<oes::core::HTTP>();
-            const auto auth_hdr = conn->get_request_header("Authorization");
-            oes::core::HTTP::Headers auth_headers;
-            auth_headers.push_back("Authorization: " + auth_hdr);
-            auto res = http_client_ptr->get(this->config_->authn_delegate_url_ + "/service", 0, auth_headers );
-            if( res.code != 200 ) {
-                conn->set_body("Forbidden.");
-                conn->set_status(websocketpp::http::status_code::forbidden); // 403
-                conn->send_http_response();
-                return;
+        bool service_authorized = false;
+        const auto auth_hdr = conn->get_request_header("Authorization");
+        if (!config_->authn_delegate_url_.empty() && !auth_hdr.empty()) {
+            try {
+                oes::core::HTTP http_client;
+                const oes::core::HTTP::Headers auth_headers { "Authorization: " + auth_hdr };
+                const auto res = http_client.get(config_->authn_delegate_url_ + "/service", 0, auth_headers);
+                service_authorized = res.code == 200;
+                if (!service_authorized) {
+                    OES_WARNING(
+                        "Partition refresh service authorization rejected: code={}, status={}", res.code, res.status
+                    );
+                }
+            } catch (const std::exception& ex) {
+                OES_ERROR("Partition refresh service authorization failed: {}", ex.what());
+            } catch (...) {
+                OES_ERROR("Partition refresh service authorization failed: unknown exception");
             }
+        }
+
+        if (!service_authorized) {
+            OES_WARNING("Partition refresh denied: administrative authorization was not established");
+            conn->set_body("Forbidden.");
+            conn->set_status(websocketpp::http::status_code::forbidden); // 403
+            conn->send_http_response();
+            return;
         }
 
         const auto& server_config = *this->config_->server_config_;
@@ -2272,6 +2279,18 @@ Server::Server(
         val.m_item = config_.dataConnectivityMode_;
     }
 
+    // Advertise the server-side array-compute extensions this build implements
+    // (custom, NOT part of official ETP 1.2). Clients use this to decide
+    // whether to offload statistics to the store or fall back to a client-side
+    // implementation. It is a plain endpoint-capability string, so clients that
+    // do not understand the key simply ignore it. NOTE: this changes the
+    // .well-known GetServerCapabilities and OpenSession responses compared to
+    // earlier releases (an additive key).
+    {
+        auto& val = cap.m_endpointCapabilities["supportedArrayExtensions"];
+        val.m_item = std::string("stats,histogram,reduce,where,wheren");
+    }
+
     impl_->config_ = &config_;
 }
 
@@ -2429,6 +2448,8 @@ void Session::onStart(
     client_identification_ = req.m_applicationName;
     if (!handshake_.client_id_.empty()) {
         client_identification_ += " @ " + handshake_.client_id_;
+    } else if (user_) {
+        client_identification_ += " @ (" + user_->email_ + ")@" + handshake_.data_partition_id_;
     }
 
    //res.m_currentDateTime set by caller, via pingPong()
@@ -2567,10 +2588,24 @@ void Session::onStart(
     // do not return more that this many items per message.
     max_batch_size_ = impl->config_->max_batch_size_;
     check_activities_ = impl->config_->check_activities_;
+    stable_import_activity_uuid_ = impl->config_->stable_import_activity_uuid_;
     pg_bulk_size_ = impl->config_->pg_bulk_size_;
     OES_VERBOSE(
         "SVR Session MaxBatchSize = {}", thou(max_batch_size_)
     );
+
+    // Cap#3 supportedArrayExtensions (custom, advisory, NOT ETP standard)
+    // Forward the static server capability into the per-session OpenSession
+    // response: native ETP clients negotiate via OpenSession and would
+    // otherwise never see it. Clients that do not know the key ignore it.
+    {
+        constexpr char array_ext_key[] = "supportedArrayExtensions";
+        const auto& server_caps = impl->config_->server_capabilities_.m_endpointCapabilities;
+        auto array_ext_found = server_caps.find(array_ext_key);
+        if (array_ext_found != server_caps.end()) {
+            res.m_endpointCapabilities[array_ext_key] = array_ext_found->second;
+        }
+    }
 
     // Negotiate compression
     const auto& clt_zcomp = req.m_supportedCompression;
@@ -2690,6 +2725,7 @@ void Session::resumeFromExistingSession(std::shared_ptr<Session> other) {
     negotiated_compression_ = other->negotiated_compression_;
     max_batch_size_ = other->max_batch_size_;
     check_activities_ = other->check_activities_;
+    stable_import_activity_uuid_ = other->stable_import_activity_uuid_;
     pg_bulk_size_ = other->pg_bulk_size_;
     threads_count_ = other->threads_count_;
     
@@ -2735,10 +2771,11 @@ void Session::onAuthN(std::string token) {
         }
         entitlement_ = impl->config_->entitlement_factory_(handshake_, user_);
     } catch (const std::exception& e) {
+        OES_ERROR("Session({}) authorization failed: {}", id_, e.what());
         proto12::ProtocolException ex;
         Datatypes::ErrorInfo info;
         info.m_code = data12::EAUTHORIZATION_REQUIRED;
-        info.m_message = e.what();
+        info.m_message = "Authorization failed";
         ex.m_error = std::move(info);
         throw ex;
     }
@@ -3090,13 +3127,11 @@ void Session::State::send( // send here
         }
 
         // Message could not be split?
+        OES_ERROR("Could not encode or send {} (-M {}): {}", msgHeaderAsString(hdr), max_msg_size_, err_msg);
         ProtocolException ex;
         auto& err = ex.m_error.emplace();
         err.m_code = Datatypes::EINVALID_STATE;
-        err.m_message = fmt::format(
-            "Could not encode+send {} (-M {}): {}",
-            msgHeaderAsString(hdr), max_msg_size_, err_msg
-        );
+        err.m_message = "Could not encode or send response";
         hdr.m_messageType = ProtocolException::info.type_.type_;
         set_FIN_bit(hdr); // Might have been removed if split
         unset_ZIP_bit(hdr); // Just in case
@@ -3344,9 +3379,10 @@ void Session::State::handle_msg(const PendingRpc_ptr& p_rpc) {
     // First, we decode the message header, always uncompressed
     const std::string head_err = rpc.decode_header();
     if (!head_err.empty()) {
+        OES_ERROR("Cannot Avro-decode message header: {}", head_err);
         return post_send_error(
             p_rpc, Datatypes::EINVALID_MESSAGE,
-            fmt::format("Cannot Avro-decode message header: {}", head_err)
+            "Cannot Avro-decode message header"
         );
     }
 
@@ -3480,7 +3516,21 @@ void Session::State::handle_msg(const PendingRpc_ptr& p_rpc) {
         ProtocolException ex;
         try {
             ex.decode(*rpc.decoder_);
+        } catch (const std::exception& decode_ex) {
+            OES_ERROR(
+                "Cannot Avro-decode client-sent ProtocolException Thread({}) Session({}): {}",
+                thisThreadId(), sid_, decode_ex.what()
+            );
+            EtpResponseStatus rc = errorStatus(
+                Datatypes::EINVALID_MESSAGE,
+                "Cannot Avro-decode Client-sent ProtocolException"
+            );
+            ex = std::move(rc.ex);
         } catch (...) {
+            OES_ERROR(
+                "Cannot Avro-decode client-sent ProtocolException Thread({}) Session({}): unknown exception",
+                thisThreadId(), sid_
+            );
             EtpResponseStatus rc = errorStatus(
                 Datatypes::EINVALID_MESSAGE,
                 "Cannot Avro-decode Client-sent ProtocolException"
@@ -3540,9 +3590,10 @@ void Session::State::handle_msg(const PendingRpc_ptr& p_rpc) {
 
     const std::string body_err = rpc.decode_request();
     if (!body_err.empty()) {
+        OES_ERROR("Cannot Avro-decode request: {}", body_err);
         return post_send_error(
             p_rpc, Datatypes::EINVALID_MESSAGE,
-            fmt::format("Cannot Avro-decode request: {}", body_err)
+            "Cannot Avro-decode request"
         );
     }
 
@@ -3754,6 +3805,10 @@ void Session::State::handle_res(
         }catch(const std::exception& ex){
             // convert ex.what() to string
             std::string err_msg = ex.what();
+            OES_ERROR(
+                "Failed to encode or send response Thread({}) Session({}): {}",
+                thisThreadId(), sid_, err_msg
+            );
             if( err_msg.compare(0, 10, "Oversize #") == 0 ){
                 rc.ok = false;
                 size_t key_index = err_msg.find("<key>");
@@ -3851,12 +3906,20 @@ void Session::State::handle_req(
             }
         );
     } catch (const std::exception& ex) {
+        OES_ERROR(
+            "Request processing failed Thread({}) Session({}): {}",
+            thisThreadId(), sid_, ex.what()
+        );
         post_send_error(
             p_rpc, Datatypes::EINVALID_STATE,
-            fmt::format("Request processing failed: {}", ex.what())
+            "Request processing failed"
         );
         // fall-thru
     } catch (...) {
+        OES_ERROR(
+            "Request processing failed Thread({}) Session({}): unknown exception",
+            thisThreadId(), sid_
+        );
         post_send_error(
             p_rpc, Datatypes::EINVALID_STATE,
             "Request processing failed: Unknown error"
@@ -3922,14 +3985,10 @@ void handleException(const EtpCompleteHandler& res_handler) {
         msg = "Server Error: TODO";
         errc = data12::ENOTSUPPORTED;
     } catch (const std::exception& ex) {
-        msg = "Server Error: Unexpected Exception: ";
-        msg += ex.what();
-
-        // trim trailing newlines
-        while (msg.back() == '\n') {
-            msg.resize(msg.size() - 1);
-        }
+        OES_ERROR("Unexpected exception while handling ETP request: {}", ex.what());
+        msg = "Server error";
     } catch (...) {
+        OES_ERROR("Unknown exception while handling ETP request");
         msg = "Server Error: Unknown Exception.";
     }
 
@@ -3966,16 +4025,13 @@ void CoreOSDUProtoImpl::ResumeSession(
     } catch (proto12::ProtocolException& ex) {
         rc.ex = std::move(ex);
     } catch (const std::exception& ex) {
+        OES_ERROR("Unexpected exception while resuming Session({}): {}", session->id(), ex.what());
         Datatypes::ErrorInfo info;
         info.m_code = data12::EINVALID_STATE;
-        info.m_message = "Generic Exception: ";
-        if (const char* msg = ex.what()) {
-            info.m_message += msg;
-        } else {
-            info.m_message += "no message";
-        }
+        info.m_message = "Server error";
         rc.ex.m_error = std::move(info);
     } catch (...) {
+        OES_ERROR("Unknown exception while resuming Session({})", session->id());
         Datatypes::ErrorInfo info;
         info.m_code = data12::EINVALID_STATE;
         info.m_message = "Unknown Exception!";

@@ -305,7 +305,7 @@ BOOST_AUTO_TEST_CASE(test_getValidSchema) {
     BOOST_CHECK(!root_info.empty());
 
     BOOST_CHECK_EQUAL(avro::AVRO_UNION, schema.root()->type());
-    BOOST_CHECK_EQUAL(size_t(228), schema.root()->leaves());
+    BOOST_CHECK_EQUAL(size_t(230), schema.root()->leaves());
 
     avro::NodePtr msg_hdr_node;
     for (int i = 0; i < int(schema.root()->leaves()); ++i) {

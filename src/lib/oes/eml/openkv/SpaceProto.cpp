@@ -118,8 +118,9 @@ void OpenKVDataspace::GetDataspaces(
     std::shared_ptr<std::vector<bool>> read_authorizations (nullptr);
     std::shared_ptr<std::vector<bool>> write_authorizations (nullptr);
     const auto auth_simple_mode = (session->entitlement_ && session->entitlement_->config().osdu_->authorizationMode() == "simple");
+    const bool auth_groups_bulk = (session->entitlement_ && session->entitlement_->isGroupBased());
     
-    if (auth_simple_mode) {
+    if (auth_simple_mode || auth_groups_bulk) {
         ErrorInfo err;
         read_authorizations = std::make_shared<std::vector<bool>>(std::move(checkDataspacesAccess(spaces, AccessType::CAN_READ, err)));
         if(err.m_code != ErrorCodes::IS_OK) {
@@ -137,7 +138,7 @@ void OpenKVDataspace::GetDataspaces(
         // Authorization (2 from 2)
         
         // Dataspace filtered-out since user has no access
-        if (auth_simple_mode && read_authorizations) {
+        if ((auth_simple_mode || auth_groups_bulk) && read_authorizations) {
             // We check in the authorization vector (we have already checked the read auth for every dataspace)
             if (!read_authorizations->at(i)) {
                 continue;
@@ -184,7 +185,7 @@ void OpenKVDataspace::GetDataspaces(
         // Set it if actually read-only.
         // Makes xdata roundtrip testing easier.
         bool can_write = false ;
-        if (auth_simple_mode && write_authorizations) {
+        if ((auth_simple_mode || auth_groups_bulk) && write_authorizations) {
             can_write = write_authorizations->at(i) ;
         } else {
             // Check for write authorization
@@ -464,16 +465,12 @@ void OpenKVDataspace::PutDataspaces(
             // else dataspace will be visible to everyone
             if (!registerDataspace(space)) {
                 const auto& entl_err = session->entitlement_->err();
-                // Prefer the specific reason recorded by the entitlement layer.
-                // Fall back to a generic hint only if none was provided.
-                const std::string reason = entl_err.status_.empty()
-                    ? std::string("authorization or ACL validation failed. Ensure customData contains valid 'viewers', 'owners', 'legaltags', and 'otherRelevantDataCountries' fields")
-                    : entl_err.status_;
-                addErrorStatus(rc, cid, EREQUEST_DENIED, fmt::format("Could not register dataspace {}: {}", space.uri().to_string(), reason));
+                addErrorStatus(rc, cid, EREQUEST_DENIED,
+                    "Could not register dataspace. Check authorization and ACL configuration.");
                 OES_ERROR(
-                    "[{}] SVR Thread({}) Session({}) Dataspace(24).PutDataspaces: Failed to register dataspace {} ({}) in entitlement service: {}",
+                    "[{}] SVR Thread({}) Session({}) Dataspace(24).PutDataspaces: Failed to register dataspace {} ({}) in entitlement service, code {}: {}",
                     session->client_identification_, thisThreadId(), session->id(),
-                    space.uid_, space.path_, reason);
+                    space.uid_, space.path_, entl_err.code_, entl_err.status_);
                 continue;
             }
         }
@@ -496,6 +493,11 @@ void OpenKVDataspace::PutDataspaces(
                     addErrorStatus(rc, cid, err);
                     continue;
 
+                }
+                // The clone is labelled with the latest version below, so its source must be at it
+                if (!repo_->getSpaceConnection(origin, err)) {
+                    addErrorStatus(rc, cid, err);
+                    continue;
                 }
                 
                 copied = true;
@@ -550,12 +552,12 @@ void OpenKVDataspace::PutDataspaces(
                 if (!unregisterDataspace(space)) {
                     const auto& entl_err = session->entitlement_->err();
                     err.m_code = entl_err.code_;
-                    err.m_message = entl_err.status_;
+                    err.m_message = "Could not unregister dataspace";
                     addErrorStatus(rc, cid, err);
                     OES_ERROR(
-                    "[{}] SVR Thread({}) Session({}) Dataspace(24).PutDataspaces: Failed to unregister dataspace {} in entitlement service after trying to put Dataspace",
+                    "[{}] SVR Thread({}) Session({}) Dataspace(24).PutDataspaces: Failed to unregister dataspace {} in entitlement service after trying to put Dataspace, code {}: {}",
                     session->client_identification_ ,thisThreadId(), session->id(), 
-                    space.uid_);
+                    space.uid_, entl_err.code_, entl_err.status_);
                 }
             }            
         } else{
@@ -813,12 +815,12 @@ void OpenKVDataspace::DeleteDataspaces(
             if(!unregisterDataspace(space)) {
                 const auto& entl_error = session->entitlement_->err();
                 err.m_code = entl_error.code_;
-                err.m_message = entl_error.status_;
+                err.m_message = "Could not unregister dataspace";
                 reply.addError(cid, err);
                 OES_ERROR(
-                    "[{}] SVR Thread({}) Session({}) Dataspace(24).DeleteDataspaces(4): Failed to unregister dataspace {} in entitlement service",
+                    "[{}] SVR Thread({}) Session({}) Dataspace(24).DeleteDataspaces(4): Failed to unregister dataspace {} in entitlement service, code {}: {}",
                     session->client_identification_ ,thisThreadId(), session->id(), 
-                    space.uid_);
+                    space.uid_, entl_error.code_, entl_error.status_);
                 continue;
             }
         }

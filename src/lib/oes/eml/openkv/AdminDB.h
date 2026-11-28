@@ -139,6 +139,8 @@ public:
     int64_t createSpaceReference(const Space& source, const Space& target);
     int64_t getSpaceReference(const Space& source, const Space& target);
     bool spaceIsReferenced(const Space& target);
+    //! Paths of the dataspaces that reference (were cloned by reference from) target.
+    std::vector<std::string> spacesReferencing(const Space& target);
     bool deleteSpaceReference(const Space& source, const Space& target);
     bool spaceIncludesReference(const Space& space);
     std::vector<ErrorInfo> importSpaces(const Space& destination, const std::vector<Space>& sources);
@@ -163,10 +165,13 @@ public:
 private:
     using Statement_opt = std::optional<oes::postgresql::Statement>;
     void prepare(Statement_opt& stmt, std::string sql) const;
-    void update_clone_schema_function(Connection_ptr conn);
+    void add_clone_schema_function(Connection_ptr conn);
+    void add_update_space_rels_function(Connection_ptr conn);
+    void add_import_space_content_function(Connection_ptr conn);
+    void update_clone_schema_function_12(Connection_ptr conn);
 
-    void update_array_summary_function(Connection_ptr conn);
-    void update_import_space_content_function(Connection_ptr conn);
+    void update_array_summary_function_11(Connection_ptr conn);
+    void update_import_space_content_function_10(Connection_ptr conn);
 
 private:
     Connection_ptr conn_;
@@ -187,6 +192,7 @@ private:
     Statement_opt update_space_info_;
     Statement_opt update_space_xdata_json_;
     Statement_opt space_is_referenced_;
+    Statement_opt spaces_referencing_;
 
     Statement_opt space_includes_reference_;
     Statement_opt create_space_reference_;

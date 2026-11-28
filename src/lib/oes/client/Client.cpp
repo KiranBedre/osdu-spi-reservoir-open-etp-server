@@ -47,6 +47,7 @@
 #include "Client.hpp"
 
 #include <oes/common/etp12/MsgFlags.h>
+#include <oes/common/etp12/ArrayComputeCap.h>
 #include <oes/common/etp12/EmlUri.h>
 #include <oes/common/etp12/EncoderSender.hpp>
 #include <oes/common/etp12/Metadata.h>
@@ -550,17 +551,26 @@ WSClientAdapter<T>::WSClientAdapter(bool use_ssl)
 
 template<typename T>    
 bool WSClientAdapter<T>::force_disconnection() {
+    // Ensure the transport loop is interrupted even if close frame cannot be sent.
+    ws_client_.stop_perpetual();
+
+    bool attempted_close = false;
     if (ws_conn_status_ == eOpen) {
         websocketpp::lib::error_code ec;
         ws_client_.close(
             ws_conn_hdl_,
             websocketpp::close::status::going_away,
-            "FORCE DISCONNECTION FROM CLIENT"
+            "FORCE DISCONNECTION FROM CLIENT",
+            ec
         );
-
-        return true;
+        OES_UNUSED(ec);
+        attempted_close = true;
+        ws_conn_status_ = eClosing;
     }
-    return false;
+
+    // Do not stop ASIO here: the close frame must be flushed so the server sees the disconnection now.
+    // The hard-stop against stalled peers is done in the destructor.
+    return attempted_close || ws_conn_status_ != eClosed;
 }
 
 template<typename T>    
@@ -625,7 +635,9 @@ void WSClientAdapter<T>::encode_and_send(
     WrappedMessageEncoder msg_enc,
     WrappedMessageHandler handler
 ) {
-    OES_ASSERT(ws_conn_status_ == eOpen, throw ClientException("Connection not open", true););
+    if (ws_conn_status_ != eOpen) {
+        throw ClientException("Connection not open", true);
+    }
 
     const unsigned tid = thisThreadId();
 
@@ -645,7 +657,9 @@ void WSClientAdapter<T>::encode_and_send(
     }
 
     typename T::connection_ptr conn = ws_client_.get_con_from_hdl(ws_conn_hdl_);
-    OES_ASSERT(conn, throw std::runtime_error("Cannot get WebSocket"););
+    if (!conn) {
+        throw ClientException("Cannot get WebSocket", true);
+    }
 
     auto hdr = ireq.header(); // needs mutable header
 
@@ -718,6 +732,8 @@ WSClientAdapter<T>::~WSClientAdapter() {
     }
 
     ws_client_.stop_perpetual();
+    // Hard-stop, to avoid hanging on the thread join below when the peer is stalled.
+    ws_client_.stop();
 
     size_t pending_rpcs_size_before = 0;
     {
@@ -1721,7 +1737,32 @@ bool Client::connect(std::chrono::milliseconds timeout, data12::ErrorInfo* err) 
     // Cap#2 MaxBatchSize
     // TODO: server-side only for now
 
+    // Cap#3 supportedArrayExtensions (custom): record whether the server is a
+    // compute-capable build so the compute routes can be guarded. An un-updated
+    // store server (OSDU M27 without the array-compute handlers) omits this key.
+    server_array_compute_extensions_.clear();
+    server_supports_array_compute_ = common::etp12::server_advertises_array_extensions(
+        res.m_endpointCapabilities, &server_array_compute_extensions_);
+    OES_VERBOSE(
+        "CLT Session supportedArrayExtensions = {}\n",
+        server_supports_array_compute_ ? server_array_compute_extensions_ : std::string("<none>"));
+
     return rc.ok;
+}
+
+bool Client::guard_array_compute(data12::ErrorInfo* p_info) const {
+    if (server_supports_array_compute_) {
+        return true;
+    }
+    if (p_info != nullptr) {
+        p_info->m_code = data12::ENOTSUPPORTED;
+        p_info->m_message =
+            "server does not advertise array-compute extensions "
+            "(supportedArrayExtensions); it is not a compute-capable build "
+            "(e.g. an un-updated OSDU M27 store server). Route compute requests "
+            "to a compute-capable server.";
+    }
+    return false;
 }
 
 bool Client::reconnect(std::chrono::milliseconds timeout, data12::ErrorInfo* err) {
@@ -2018,6 +2059,8 @@ bool Client::close(std::string& failure, std::chrono::milliseconds timeout) {
     data12::ErrorInfo err;
     auto status = impl_->close_session("EML done. Closed by the client.", &err, timeout);
     failure = err.m_message;
+    // CloseSession sent: the destructor must not send another one (the server would reject it).
+    impl_->ws_conn_status_ = ClientImpl::eClosing;
     return status;
 }
 

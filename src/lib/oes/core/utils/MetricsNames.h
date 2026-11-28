@@ -82,4 +82,18 @@ inline constexpr const char* TRANSACTION_LATENCY_ROLLBACK = "transaction_latency
 inline constexpr const char* ETP_REQUEST_BYTES = "etp_request_bytes";
 inline constexpr const char* ETP_RESPONSE_BYTES = "etp_response_bytes";
 
+    // Compute-extension metrics (custom EXTENSION, NOT part of official ETP 1.2).
+    // These expose the CPU-bound array-compute path (STATS): SUCCESS counts folds
+    // that ran to completion and answered, ERROR counts folds that answered with
+    // an error part (unresolved array, read failure, ...), REJECTED counts
+    // requests turned away before running (malformed marker, concurrency gate -
+    // the saturation / autoscale signal), TIMEOUT counts folds aborted by
+    // COMPUTE_MAX_RUNTIME_MS, and LATENCY is the wall-clock summary of folds
+    // that ran to completion.
+    inline constexpr const char *COMPUTE_OPS_COUNTER_SUCCESS = "compute_ops_counter_success";
+    inline constexpr const char *COMPUTE_OPS_COUNTER_ERROR = "compute_ops_counter_error";
+    inline constexpr const char *COMPUTE_OPS_COUNTER_REJECTED = "compute_ops_counter_rejected";
+    inline constexpr const char *COMPUTE_OPS_COUNTER_TIMEOUT = "compute_ops_counter_timeout";
+    inline constexpr const char *COMPUTE_LATENCY = "compute_latency";
+
 } // namespace oes::core::metrics

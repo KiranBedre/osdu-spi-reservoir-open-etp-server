@@ -388,6 +388,41 @@ bool EntitlementGroups::canDeleteDataspace(oes::osdu::api::EntitlementDataspace_
     return ok;
 }
 
+bool EntitlementGroups::canReadUpdateDataspaceBulk(
+    oes::osdu::api::EntitlementDataspaceGroupsBulk_ptr dataspaces,
+    std::vector<bool>& can_read,
+    std::vector<bool>& can_update
+) {
+    assert(dataspaces);
+    // cppcheck-suppress unreadVariable
+    auto span = oes::core::OtelSpan(std::string("EntitlementGroups.") + __func__);
+
+    auto au = impl_->auth_user_.lock();
+    assert(au);
+    impl_->error_.reset();
+
+    std::vector<bool> found;
+    if (!impl_->entitlement_dataspace_client_->getDataspaceRecordsBulk(au->header_, *dataspaces, found, impl_->error_)) {
+        OES_WARNING("canReadUpdateDataspaceBulk: could not list dataspace records (code {}): {}",
+            impl_->error_.code_, impl_->error_.status_);
+        return false;
+    }
+
+    const std::set<std::string>& groups = impl_->listGroups();
+    const size_t n = dataspaces->dataspaces_.size();
+    can_read.assign(n, false);
+    can_update.assign(n, false);
+    for (size_t i = 0; i < n; ++i) {
+        if (!found[i]) {
+            continue; // no record or record not visible to the user: off-limits
+        }
+        const auto& ds = *dataspaces->dataspaces_[i];
+        can_update[i] = ds.hasPermission(OWNERS, groups);
+        can_read[i] = can_update[i] || ds.hasPermission(VIEWERS, groups);
+    }
+    return true;
+}
+
 bool EntitlementGroups::registerDataspace(oes::osdu::api::EntitlementDataspace_ptr dataspace) {
     // cppcheck-suppress unreadVariable
     auto span = oes::core::OtelSpan(std::string("EntitlementGroups.") + __func__);
@@ -436,7 +471,7 @@ bool EntitlementGroups::registerDataspace(oes::osdu::api::EntitlementDataspace_p
     }
 
     // Already exists, remove current occurrence
-    auto result = impl_->getDataspaceRecord();
+    impl_->getDataspaceRecord();
     if (impl_->error_.code_ == 200) {
             if(!unregisterDataspace(dataspace)){
                 OES_ERROR("registerDataspace: failed to unregister existing dataspace record for '{}'", dataspace->path_);

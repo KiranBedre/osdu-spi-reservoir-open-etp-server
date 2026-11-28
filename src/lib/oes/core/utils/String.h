@@ -21,6 +21,8 @@
 #include <oes/core/utils/fwd.h>
 
 #include <iosfwd>
+#include <iterator>
+#include <string>
 
 namespace oes {
 namespace core {
@@ -72,6 +74,19 @@ public:
             }
         }
 
+        return s;
+    }
+
+    //! join() of at most `maxListed` items, followed by "<sep>... (+N more)"
+    //! when the container is longer. For error messages that echo a list.
+    template<typename Container>
+    static String joinCapped(const Container& c, const String& separator, size_t maxListed) {
+        if( c.size() <= maxListed ) {
+            return join(c, separator);
+        }
+        String s = join(Container(c.begin(), std::next(c.begin(), maxListed)), separator);
+        s += separator;
+        s += "... (+" + std::to_string(c.size() - maxListed) + " more)";
         return s;
     }
 

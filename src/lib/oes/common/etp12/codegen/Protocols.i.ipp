@@ -2,7 +2,7 @@
 // WARNING: DO NOT EDIT: SharedComponents/src/bin/etpgencpp Generated File
 
 // ============================================================================
-// Copyright 2018-2021 Emerson Paradigm Holding LLC. All rights reserved.
+// Copyright 2018-2026 Emerson Paradigm Holding LLC. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -2226,6 +2226,8 @@ const char* IDataspaceOSDU::messageName(int messageType) {
     case /*8*/DataspaceOSDU::CopyToDataspaceResponse::info.type_.type_: return "CopyToDataspaceResponse(8)";
     case /*9*/DataspaceOSDU::CopyDataspaceFromRemote::info.type_.type_: return "CopyDataspaceFromRemote(9)";
     case /*10*/DataspaceOSDU::CopyDataspaceFromRemoteResponse::info.type_.type_: return "CopyDataspaceFromRemoteResponse(10)";
+    case /*11*/DataspaceOSDU::CopyDataspaceToRemote::info.type_.type_: return "CopyDataspaceToRemote(11)";
+    case /*12*/DataspaceOSDU::CopyDataspaceToRemoteResponse::info.type_.type_: return "CopyDataspaceToRemoteResponse(12)";
     }
     return nullptr;
 }
@@ -2246,6 +2248,8 @@ int IDataspaceOSDU::responseMessageType(int requestMessageType) const {
         return CopyToDataspace_res_t::info.type_.type_; // 8
     case CopyDataspaceFromRemote_req_t::info.type_.type_: // 9
         return CopyDataspaceFromRemote_res_t::info.type_.type_; // 10
+    case CopyDataspaceToRemote_req_t::info.type_.type_: // 11
+        return CopyDataspaceToRemote_res_t::info.type_.type_; // 12
     }
     return -1; // unknown request
 }
@@ -2311,6 +2315,17 @@ void IDataspaceOSDU::dispatchRequest(
         return;
     }
 
+    case CopyDataspaceToRemote_req_t::info.type_.type_: { // 11
+        auto p_body = ireq.takeBody();
+        assert(dynamic_cast<CopyDataspaceToRemote_req_t*>(p_body.get()));
+        auto* body = static_cast<CopyDataspaceToRemote_req_t*>(p_body.get());
+        CopyDataspaceToRemote(
+            ireq, std::move(*body),
+            unwrapHandler<CopyDataspaceToRemote_res_t>(std::move(wres_handler))
+        );
+        return;
+    }
+
     } // switch
 
     throw std::runtime_error("Unknown message");
@@ -2357,6 +2372,13 @@ std::unique_ptr<IDataspaceOSDU> IDataspaceOSDU::makeClientImpl(
         ) override final {
             send(ireq, std::move(req), std::move(handler_cb));
         }
+
+        void CopyDataspaceToRemote(
+            IRequest& ireq, CopyDataspaceToRemote_req_t req, // 2424.11
+            EtpResponseHandler<CopyDataspaceToRemote_res_t> handler_cb // 2424.12
+        ) override final {
+            send(ireq, std::move(req), std::move(handler_cb));
+        }
     };
     return std::make_unique<ClientImpl>(std::move(void_sender), std::move(resp_sender));
 }
@@ -2364,3 +2386,4 @@ std::unique_ptr<IDataspaceOSDU> IDataspaceOSDU::makeClientImpl(
 //============================================================================
 
 } //      oes::common::etp12::Protocol
+

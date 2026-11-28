@@ -395,6 +395,34 @@ BOOST_AUTO_TEST_CASE(test_Transaction18_isolation_array_proto) {
 // TODO: Same as test_Transaction18_isolation_array_proto() above, but PUT the
 //       owner-object BEFORE the array itself. Should be OK, but KO right now.
 
+// A commit rejected for missing references names the offending reference(s)
+// in the failure reason (not only their count), so the client can act on it.
+BOOST_AUTO_TEST_CASE(test_Transaction18_missing_reference_failure_reason) {
+    const auto space = putSpace("TRA/MissingRef");
+    const auto txUid = startTx(space.m_uri, false); // read-write
+
+    // The datum mock references the CRS mock through its LocalCrs DOR; the CRS
+    // is deliberately NOT put, so the commit must fail on the dangling DOR.
+    const auto& datum = oes::testing::eml::datum_mock();
+    const auto& crs = oes::testing::eml::crs_mock();
+    putMockObj(space, datum);
+
+    auto rpcCommit = makeRpc(&OpenKVTransProto::CommitTransaction);
+    oes::common::assignUid(rpcCommit.req_.m_transactionUuid, txUid);
+    BOOST_REQUIRE(rpcCommit.call());
+    BOOST_CHECK(!rpcCommit.res_.m_successful);
+
+    const std::string& reason = rpcCommit.res_.m_failureReason;
+    BOOST_TEST_MESSAGE(reason);
+    BOOST_CHECK_EQUAL(reason.rfind("1 Missing reference(s): ", 0), 0u);
+    // from <type>(<guid>) to <type>(<guid>) using <xpath>
+    BOOST_CHECK_NE(reason.find(fmt::format("from {}({})", datum.type_, datum.guid_.toXmlString())), std::string::npos);
+    BOOST_CHECK_NE(reason.find(fmt::format("to {}({})", crs.type_, crs.guid_.toXmlString())), std::string::npos);
+    BOOST_CHECK_NE(reason.find("LocalCrs"), std::string::npos);
+
+    rollbackTx(txUid);
+}
+
 BOOST_AUTO_TEST_SUITE_END() // TransProtoTests
 
 //============================================================================

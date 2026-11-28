@@ -2,7 +2,7 @@
 // WARNING: DO NOT EDIT: SharedComponents/src/bin/etpgencpp Generated File
 
 // ============================================================================
-// Copyright 2018-2021 Emerson Paradigm Holding LLC. All rights reserved.
+// Copyright 2018-2026 Emerson Paradigm Holding LLC. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -1742,6 +1742,20 @@ struct codec_traits<oes::common::etp12::Protocol::DataspaceOSDU::CopyDataspaceFr
 };
 
 template <>
+struct codec_traits<oes::common::etp12::Protocol::DataspaceOSDU::CopyDataspaceToRemote> {
+    using Record_t = oes::common::etp12::Protocol::DataspaceOSDU::CopyDataspaceToRemote;
+    static void encode(Encoder& e, const Record_t& r) { r.encode(e); }
+    static void decode(Decoder& d,       Record_t& r) { r.decode(d); }
+};
+
+template <>
+struct codec_traits<oes::common::etp12::Protocol::DataspaceOSDU::CopyDataspaceToRemoteResponse> {
+    using Record_t = oes::common::etp12::Protocol::DataspaceOSDU::CopyDataspaceToRemoteResponse;
+    static void encode(Encoder& e, const Record_t& r) { r.encode(e); }
+    static void decode(Decoder& d,       Record_t& r) { r.decode(d); }
+};
+
+template <>
 struct codec_traits<oes::common::etp12::Protocol::DataspaceOSDU::GetDataspaceInfoResponse> {
     using Record_t = oes::common::etp12::Protocol::DataspaceOSDU::GetDataspaceInfoResponse;
     static void encode(Encoder& e, const Record_t& r) { r.encode(e); }
@@ -1749,3 +1763,4 @@ struct codec_traits<oes::common::etp12::Protocol::DataspaceOSDU::GetDataspaceInf
 };
 
 } //      avro
+

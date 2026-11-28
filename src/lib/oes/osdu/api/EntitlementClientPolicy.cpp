@@ -400,9 +400,10 @@ bool EntitlementDataspaceClientPolicy::delDataspaceRecord(
         method = oes::core::HTTP::Method::ePOST;
     } else {
         assert(!impl_->config_->storageUrl().empty());
-        req_url = impl_->config_->storageUrl() + impl_->config_->recordsPath() + "/" + dataspace.idForQuery(*(impl_->config_));
+        // Logical delete: a DELETE (purge) requires the storage admin role
+        req_url = impl_->config_->storageUrl() + impl_->config_->recordsPath() + "/" + dataspace.idForQuery(*(impl_->config_)) + ":delete";
         // body is nullptr
-        method = oes::core::HTTP::Method::eDELETE;
+        method = oes::core::HTTP::Method::ePOST;
     }
     
     // telemetry

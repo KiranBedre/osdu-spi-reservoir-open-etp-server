@@ -1821,8 +1821,8 @@ bool space_export_epc(const EmlAppContext& ctx) {
     // (HDF5 write), the queue is in fact unlikely to get full, and the consumer side
     // will be "stalled" most of the time, waiting for new entries to be enqueued.
     const int max_queue_depth = ctx.args["array-queue-depth"].as<int>();
-    if (!(0 <= max_batch_size && max_batch_size <= 1000)) {
-        OES_ERROR("Invalid --array-queue-depth: Not in [0 - 1,000] range");
+    if (!(1 <= max_queue_depth && max_queue_depth <= 1000)) {
+        OES_ERROR("Invalid --array-queue-depth: Not in [1 - 1,000] range");
         return false;
     }
 
@@ -1891,7 +1891,7 @@ bool space_copy_from_remote(const EmlAppContext& ctx) {
     if (!space_ok) {
         return false;
     }
-    std::tie(source_space_path, space_ok) = getSpacePath(ctx, true, true, "source-space");
+    std::tie(source_space_path, space_ok) = getSpacePath(ctx, true, true, "remote-space");
     if (!space_ok) {
         return false;
     }
@@ -1916,18 +1916,18 @@ bool space_copy_from_remote(const EmlAppContext& ctx) {
     cpy_remote_rpc.req_.m_dataspacePath = target_space_path;
 
     cpy_remote_rpc.req_.m_sourceServer.m_sourceDataspacePath = source_space_path;
-    cpy_remote_rpc.req_.m_sourceServer.m_sourceJwt = ctx.args["source-token"].as<std::string>();
-    cpy_remote_rpc.req_.m_sourceServer.m_sourcePartition = ctx.args["source-partition"].as<std::string>();
-    cpy_remote_rpc.req_.m_sourceServer.m_sourceServer = ctx.args["source-server"].as<std::string>();
+    cpy_remote_rpc.req_.m_sourceServer.m_sourceJwt = ctx.args["remote-token"].as<std::string>();
+    cpy_remote_rpc.req_.m_sourceServer.m_sourcePartition = ctx.args["remote-partition"].as<std::string>();
+    cpy_remote_rpc.req_.m_sourceServer.m_sourceServer = ctx.args["remote-server"].as<std::string>();
     cpy_remote_rpc.req_.m_extraData.emplace("timeout_ms", std::to_string(clt.put_get_timeout_.count()));
 
     if (cpy_remote_rpc.req_.m_sourceServer.m_sourceServer.empty()) {
-        OES_ERROR("Source server empty");
+        OES_ERROR("Remote (source) server empty, please use --remote-server");
         return false;
     }
     
     if (cpy_remote_rpc.req_.m_sourceServer.m_sourcePartition.empty()) {
-        OES_WARNING("Source partition empty, using \"single\" partition");
+        OES_WARNING("Remote (source) partition empty, using \"single\" partition");
         cpy_remote_rpc.req_.m_sourceServer.m_sourcePartition = "single";
     }
 
@@ -1954,6 +1954,85 @@ bool space_copy_from_remote(const EmlAppContext& ctx) {
 }
 
 //============================================================================
+bool space_copy_to_remote(const EmlAppContext& ctx) {
+    std::string source_space_path, target_space_path;
+    bool space_ok = false;
+
+    std::tie(source_space_path, space_ok) = getSpacePath(ctx, true);
+    if (!space_ok) {
+        OES_ERROR("Invalid space path argument");
+        return false;
+    }
+    std::tie(target_space_path, space_ok) = getSpacePath(ctx, true, true, "remote-space");
+    if (!space_ok) {
+        OES_ERROR("Invalid remote-space path argument");
+        return false;
+    }
+
+    EtpClient12 clt(ctx);
+    clt.cfg_.requested_protocols_.assign({
+        etpc::data12::Protocol::eDataspaceOSDU
+    });
+    if (!clt.connect()) {
+        OES_ERROR("Client not able to connect to server");
+        return false;
+    }
+
+    auto* spc_osdu_proto = clt.space_proto_osdu();
+    if (!spc_osdu_proto) {
+        OES_ERROR("Could not aquire osdu proto");
+        return false;
+    }
+
+    auto cpy_remote_rpc = rpcFor(spc_osdu_proto, &etpc::proto12::IDataspaceOSDU::CopyDataspaceToRemote);
+
+    cpy_remote_rpc.req_.m_action = "trigger";
+    cpy_remote_rpc.req_.m_dataspacePath = source_space_path;
+
+    cpy_remote_rpc.req_.m_targetServer.m_sourceDataspacePath = target_space_path;
+    cpy_remote_rpc.req_.m_targetServer.m_sourceJwt = ctx.args["remote-token"].as<std::string>();
+    cpy_remote_rpc.req_.m_targetServer.m_sourcePartition = ctx.args["remote-partition"].as<std::string>();
+    cpy_remote_rpc.req_.m_targetServer.m_sourceServer = ctx.args["remote-server"].as<std::string>();
+
+    // The source waits up to commit_timeout for the target's commit, which may upgrade the copy:
+    // wait at least as long for its reply
+    const auto commit_timeout = std::max(clt.put_get_timeout_, std::chrono::milliseconds(std::chrono::minutes(10)));
+    cpy_remote_rpc.req_.m_extraData.emplace("timeout_ms", std::to_string(clt.put_get_timeout_.count()));
+    cpy_remote_rpc.req_.m_extraData.emplace("commit_timeout_ms", std::to_string(commit_timeout.count()));
+
+    if (cpy_remote_rpc.req_.m_targetServer.m_sourceServer.empty()) {
+        OES_ERROR("Remote (target) server empty, please use --remote-server");
+        return false;
+    }
+
+    if (cpy_remote_rpc.req_.m_targetServer.m_sourcePartition.empty()) {
+        OES_WARNING("Remote (target) partition empty, using \"single\" partition");
+        cpy_remote_rpc.req_.m_targetServer.m_sourcePartition = "single";
+    }
+
+    std::string curr_table;
+    ushort progress{10}; // assume 9 tables (10% each)
+    std::stringstream ss;
+    if (!cpy_remote_rpc.callForEachValue(
+        ss, commit_timeout,
+        [&](auto& entry){
+            curr_table = entry.m_tableName;
+            if (curr_table == "admin") { // admin may not be transfered if it does not have any xdata
+                progress = 0; // 10 tables with admin
+            }
+
+            progress += 10;
+            OES_INFO("Copy dataspace (table {}) progress: {}%", curr_table, progress);
+    })) {
+        OES_ERROR("Error on dataspace copy: {}", ss.str());
+        return false;
+    }
+
+    OES_INFO("Copy dataspace succeeded");
+    return true;
+}
+
+//============================================================================
 
 bool space_copy_ref(const EmlAppContext& ctx) {
     auto [dest_space_path, space_ok] = getSpacePath(ctx);
@@ -1961,7 +2040,7 @@ bool space_copy_ref(const EmlAppContext& ctx) {
         return false;
     }
 
-    std::string orig_space_path = ctx.args["source-space"].as<std::string>();
+    std::string orig_space_path = ctx.args["from-space"].as<std::string>();
 
     EtpClient12 clt(ctx);
     clt.cfg_.requested_protocols_.assign({
@@ -2049,16 +2128,21 @@ bool space_copy_ref(const EmlAppContext& ctx) {
 bool space_copy(const EmlAppContext& ctx) {
     const bool by_ref = ctx.hasArg("by-ref");
     const bool from_remote = ctx.hasArg("from-remote");
+    const bool to_remote = ctx.hasArg("to-remote");
 
-    if (!by_ref && !from_remote) {
-        OES_ERROR("None args \"by-ref\" and \"from-remote\" passed, please use one");
+    const int modes = int(by_ref) + int(from_remote) + int(to_remote);
+    if (modes == 0) {
+        OES_ERROR("None of the args \"by-ref\", \"from-remote\" and \"to-remote\" passed, please use one");
         return false;
-    } else if (!by_ref && !from_remote) {
-        OES_ERROR("Both args \"by-ref\" and \"from-remote\" passed, please use only one");
+    } else if (modes > 1) {
+        OES_ERROR("More than one of the args \"by-ref\", \"from-remote\" and \"to-remote\" passed, please use only one");
         return false;
     }
 
-    return by_ref ? space_copy_ref(ctx) : space_copy_from_remote(ctx);
+    if (by_ref) {
+        return space_copy_ref(ctx);
+    }
+    return from_remote ? space_copy_from_remote(ctx) : space_copy_to_remote(ctx);
 }
 
 } //namespace
@@ -2089,7 +2173,8 @@ int space_main(EmlAppContext& ctx, const UnparsedArgs& unparsed_args) {
         ("import-space",txtArg(),   "Import other ETP dataspace contents into this one")
         ("import-epc", txtArg(),    "Import (PUT) EPC file into ETP server")
         ("export-epc", txtArgOpt(), "Export (GET) EPC file from ETP server")
-        ("copy",                    "Copy dataspace by reference OR from remote server. Must provide --by-ref XOR --from-remote")
+        ("copy",                    "Copy dataspace by reference, from a remote server, OR to a remote server.\n"
+                                    "Must provide one of --by-ref, --from-remote, --to-remote")
     ;
 
     po::options_description opt_desc("Options", ctx.terminalWidth_);
@@ -2130,13 +2215,17 @@ int space_main(EmlAppContext& ctx, const UnparsedArgs& unparsed_args) {
         ("transaction-limit-size", txtArg("inf"), "Minimum size to trigger transaction commit and start a new one when uploading arrays.")
         ("reconnect-retries", intArg(-1), "Maximum number of reconnection retries while uploading arrays")
         
-        ("by-ref", "Copy dataspace by reference")
-        ("from-remote", "Copy dataspace from remote server (--source-server) to the target server (--server-url)")
+        ("by-ref", "Copy dataspace (--from-space) by reference to the dataspace (--space-path), both on the server (--server-url)")
+        ("from-space", txtArg(""), "Dataspace copied from, on the same server (--by-ref).")
 
-        ("source-partition", txtArg(""), "Original data partition.")
-        ("source-space", txtArg(""), "Original dataspace to be copied from.")
-        ("source-token", txtArg(""), "Source remote server token")
-        ("source-server", txtArg(""), "Source remote server")
+        ("from-remote", "Copy dataspace (--remote-space) of the remote server (--remote-server) to the dataspace (--space-path) of the server (--server-url)")
+        ("to-remote", "Copy dataspace (--space-path) of the server (--server-url) to the dataspace (--remote-space) of the remote server (--remote-server).\n"
+                      "The remote dataspace must exist and be empty")
+
+        ("remote-partition", txtArg(""), "Remote server data partition.")
+        ("remote-space", txtArg(""), "Remote dataspace: copied from (--from-remote) or to (--to-remote).")
+        ("remote-token", txtArg(""), "Remote server token")
+        ("remote-server", txtArg(""), "Remote server")
     ;
 
     cmd_desc.add(opt_desc);

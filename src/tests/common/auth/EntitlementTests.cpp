@@ -707,9 +707,9 @@ BOOST_AUTO_TEST_CASE(EntitlementDataspaceClient_delDataspaceRecord) {
 
     oes::core::HTTP::Response res;
     res.code = 204;
-    const std::string req_url = "STORAGE_URL/records/DATA_PARTITION_ID:dataset--ETPDataspace:uuid";
+    const std::string req_url = "STORAGE_URL/records/DATA_PARTITION_ID:dataset--ETPDataspace:uuid:delete";
 
-    EXPECT_CALL (*http_ptr_, del (req_url, _, header, _))
+    EXPECT_CALL (*http_ptr_, post (req_url, _, header, std::string(), _))
         .WillOnce (Return (res));
 
     EntitlementDataspaceGroups ds("uuid", "/path1/path2", std::vector<std::string>(), std::vector<std::string>());
@@ -777,6 +777,169 @@ R"rr0(
     BOOST_REQUIRE_EQUAL_COLLECTIONS(ds.owners_group_.begin(), ds.owners_group_.end(), expected1.begin(), expected1.end());
     BOOST_REQUIRE(ret);
     BOOST_REQUIRE(err.code_ == res.code);
+}
+
+// EntitlementDataspaceGroupsBulk
+
+namespace {
+EntitlementDataspaceGroupsBulk makeGroupsBulk() {
+    return EntitlementDataspaceGroupsBulk({
+        std::make_shared<EntitlementDataspaceGroups>("uuid1", "/path1", std::vector<std::string>(), std::vector<std::string>()),
+        std::make_shared<EntitlementDataspaceGroups>("uuid2", "/path2", std::vector<std::string>(), std::vector<std::string>())
+    });
+}
+
+const char* GROUPS_BULK_QUERY = "?kind=SCHEMA_ID%3awks%3adataset--ETPDataspace%3a1.0.0&limit=100";
+
+const char* GROUPS_BULK_PAGE = R"rr0(
+{
+    "cursor": "c1=",
+    "results": [
+        {
+            "acl": {
+                "owners": ["owners1@DATA_PARTITION_ID.DOMAIN_NAME"],
+                "viewers": ["viewers1@DATA_PARTITION_ID.DOMAIN_NAME"]
+            },
+            "data": { "DatasetProperties": { "URI": "eml:///dataspace(/path1)" } },
+            "id": "DATA_PARTITION_ID:dataset--ETPDataspace:uuid1",
+            "kind": "SCHEMA_ID:wks:dataset--ETPDataspace:1.0.0"
+        },
+        {
+            "acl": {
+                "owners": ["other@DATA_PARTITION_ID.DOMAIN_NAME"],
+                "viewers": ["other@DATA_PARTITION_ID.DOMAIN_NAME"]
+            },
+            "id": "DATA_PARTITION_ID:dataset--ETPDataspace:other",
+            "kind": "SCHEMA_ID:wks:dataset--ETPDataspace:1.0.0"
+        }
+    ]
+}
+)rr0";
+}
+
+BOOST_AUTO_TEST_CASE(EntitlementDataspaceGroupsBulk_queryParams) {
+    auto ds = makeGroupsBulk();
+    BOOST_REQUIRE_EQUAL(ds.queryParams(*cfg_, ""), GROUPS_BULK_QUERY);
+    BOOST_REQUIRE_EQUAL(ds.queryParams(*cfg_, "c1="), std::string(GROUPS_BULK_QUERY) + "&cursor=c1%3d");
+}
+
+BOOST_AUTO_TEST_CASE(EntitlementDataspaceGroupsBulk_deserialize) {
+    auto ds = makeGroupsBulk();
+    const auto index_by_id = ds.indexById(*cfg_);
+    std::vector<bool> found(2, false);
+    std::string cursor;
+
+    BOOST_REQUIRE(ds.deserialize(GROUPS_BULK_PAGE, index_by_id, found, cursor));
+    BOOST_REQUIRE(found.at(0));
+    BOOST_REQUIRE(!found.at(1));
+    BOOST_REQUIRE_EQUAL(cursor, "c1=");
+    BOOST_REQUIRE(ds.dataspaces_.at(0)->owners_group_ == std::set<std::string>{"owners1@DATA_PARTITION_ID.DOMAIN_NAME"});
+    BOOST_REQUIRE(ds.dataspaces_.at(0)->viewers_group_ == std::set<std::string>{"viewers1@DATA_PARTITION_ID.DOMAIN_NAME"});
+    BOOST_REQUIRE(ds.dataspaces_.at(1)->owners_group_.empty());
+
+    // Last page: empty results end the listing even if a cursor is returned
+    BOOST_REQUIRE(ds.deserialize(R"({"cursor": "c2", "results": []})", index_by_id, found, cursor));
+    BOOST_REQUIRE(cursor.empty());
+
+    BOOST_REQUIRE(!ds.deserialize(R"([])", index_by_id, found, cursor));
+}
+
+BOOST_AUTO_TEST_CASE(EntitlementDataspaceClient_getDataspaceRecordsBulk) {
+    oes::core::HTTP::Headers header{
+        "content-type: application/json",
+        "data-partition-id: DATA_PARTITION_ID",
+        "Accept: application/json",
+        "Authorization: Bearer ACCESS_TOKEN"
+    };
+
+    oes::core::HTTP::Response res1;
+    res1.code = 200;
+    res1.body = GROUPS_BULK_PAGE;
+    oes::core::HTTP::Response res2;
+    res2.code = 200;
+    res2.body = R"({"cursor": null, "results": []})";
+
+    const std::string req_url = std::string("STORAGE_URL/records") + GROUPS_BULK_QUERY;
+    EXPECT_CALL (*http_ptr_, get (req_url, _, header, _))
+        .WillOnce (Return (res1));
+    EXPECT_CALL (*http_ptr_, get (req_url + "&cursor=c1%3d", _, header, _))
+        .WillOnce (Return (res2));
+
+    auto ds = makeGroupsBulk();
+    oes::osdu::api::EntitlementDataspaceClient entitlement_ds_client(cfg_, base_client_);
+    EntitlementError err;
+    std::vector<bool> found;
+    BOOST_REQUIRE(entitlement_ds_client.getDataspaceRecordsBulk(access_token_, ds, found, err));
+    BOOST_REQUIRE(found == std::vector<bool>({true, false}));
+}
+
+BOOST_AUTO_TEST_CASE(EntitlementDataspaceClient_getDataspaceRecordsBulk_forbidden) {
+    oes::core::HTTP::Response res;
+    res.code = 403;
+    EXPECT_CALL (*http_ptr_, get (_, _, _, _))
+        .WillOnce (Return (res));
+
+    auto ds = makeGroupsBulk();
+    oes::osdu::api::EntitlementDataspaceClient entitlement_ds_client(cfg_, base_client_);
+    EntitlementError err;
+    std::vector<bool> found;
+    BOOST_REQUIRE(entitlement_ds_client.getDataspaceRecordsBulk(access_token_, ds, found, err));
+    BOOST_REQUIRE(found == std::vector<bool>({false, false}));
+}
+
+BOOST_AUTO_TEST_CASE(EntitlementDataspaceClient_getDataspaceRecordsBulk_unsupported) {
+    oes::core::HTTP::Response res;
+    res.code = 405;
+    EXPECT_CALL (*http_ptr_, get (_, _, _, _))
+        .WillOnce (Return (res));
+
+    auto ds = makeGroupsBulk();
+    oes::osdu::api::EntitlementDataspaceClient entitlement_ds_client(cfg_, base_client_);
+    EntitlementError err;
+    std::vector<bool> found;
+    BOOST_REQUIRE(!entitlement_ds_client.getDataspaceRecordsBulk(access_token_, ds, found, err));
+    BOOST_REQUIRE_EQUAL(err.code_, 405);
+}
+
+BOOST_AUTO_TEST_CASE(EntitlementGroups_canReadUpdateDataspaceBulk) {
+    oes::core::HTTP::Response res1;
+    res1.code = 200;
+    res1.body = GROUPS_BULK_PAGE;
+    oes::core::HTTP::Response res2;
+    res2.code = 200;
+    res2.body = R"({"cursor": null, "results": []})";
+    EXPECT_CALL (*http_ptr_, get (_, _, _, _))
+        .WillOnce (Return (res1))
+        .WillOnce (Return (res2))
+        .WillOnce (Return (res1))
+        .WillOnce (Return (res2));
+
+    EntitlementConfig config;
+    config.HTTP_factory_ = [&] {
+        return http_ptr_;
+    };
+    config.osdu_ = EntitlementOSDUConfig_Test::make();
+    AuthenticatedUser_ptr authenticated_user = std::make_shared<AuthenticatedUser>();
+    authenticated_user->header_ = "ACCESS_TOKEN";
+
+    std::vector<bool> can_read;
+    std::vector<bool> can_update;
+    {
+        EntitlementGroups entitlement(config);
+        entitlement.init("DATA_PARTITION_ID", authenticated_user, "user@mail", {"viewers1@DATA_PARTITION_ID.DOMAIN_NAME"});
+        BOOST_REQUIRE(entitlement.canReadUpdateDataspaceBulk(
+            std::make_shared<EntitlementDataspaceGroupsBulk>(makeGroupsBulk()), can_read, can_update));
+        BOOST_REQUIRE(can_read == std::vector<bool>({true, false}));
+        BOOST_REQUIRE(can_update == std::vector<bool>({false, false}));
+    }
+    {
+        EntitlementGroups entitlement(config);
+        entitlement.init("DATA_PARTITION_ID", authenticated_user, "user@mail", {"owners1@DATA_PARTITION_ID.DOMAIN_NAME"});
+        BOOST_REQUIRE(entitlement.canReadUpdateDataspaceBulk(
+            std::make_shared<EntitlementDataspaceGroupsBulk>(makeGroupsBulk()), can_read, can_update));
+        BOOST_REQUIRE(can_read == std::vector<bool>({true, false}));
+        BOOST_REQUIRE(can_update == std::vector<bool>({true, false}));
+    }
 }
 
 // EntitlementDataspaceClientPolicy
@@ -1026,9 +1189,9 @@ BOOST_AUTO_TEST_CASE(EntitlementDataspaceClientPolicy_delDataspaceRecord) {
 
     oes::core::HTTP::Response res;
     res.code = 204;
-    const std::string req_url = "STORAGE_URL/records/DATA_PARTITION_ID:dataset--ETPDataspace:uuid";
+    const std::string req_url = "STORAGE_URL/records/DATA_PARTITION_ID:dataset--ETPDataspace:uuid:delete";
 
-    EXPECT_CALL (*http_ptr_, del (req_url, _, header, _))
+    EXPECT_CALL (*http_ptr_, post (req_url, _, header, std::string(), _))
         .WillOnce (Return (res));
     
     EntitlementDataspacePolicy ds("uuid", "/path1/path2", "DS_URI", {"US","UK"}, {"FR"});
@@ -1600,8 +1763,8 @@ R"rr(
         .WillOnce (Return (res_get));
     oes::core::HTTP::Response res;
     res.code = 204;
-    const std::string req_url = "STORAGE_URL/records/DATA_PARTITION_ID:dataset--ETPDataspace:uuid";
-    EXPECT_CALL (*http_ptr_, del (req_url, _, header, _))
+    const std::string req_url = "STORAGE_URL/records/DATA_PARTITION_ID:dataset--ETPDataspace:uuid:delete";
+    EXPECT_CALL (*http_ptr_, post (req_url, _, header, std::string(), _))
         .InSequence(s)
         .WillOnce (Return (res));
 

@@ -2,7 +2,7 @@
 // WARNING: DO NOT EDIT: SharedComponents/src/bin/etpgencpp Generated File
 
 // ============================================================================
-// Copyright 2018-2021 Emerson Paradigm Holding LLC. All rights reserved.
+// Copyright 2018-2026 Emerson Paradigm Holding LLC. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -889,6 +889,13 @@ struct OES_COMMON_EXPORT IDataspaceOSDU : IProtocol {
         EtpResponseHandler<CopyDataspaceFromRemote_res_t> process_cb // messageTypeId 10
     ) = 0;
 
+    using CopyDataspaceToRemote_req_t = DataspaceOSDU::CopyDataspaceToRemote;
+    using CopyDataspaceToRemote_res_t = DataspaceOSDU::CopyDataspaceToRemoteResponse;
+    virtual void CopyDataspaceToRemote( // messageTypeId 11
+        IRequest& ireq, CopyDataspaceToRemote_req_t req,
+        EtpResponseHandler<CopyDataspaceToRemote_res_t> process_cb // messageTypeId 12
+    ) = 0;
+
 public: // IProtocol interface
     const char* messageTypeName(int messageType) const final override;
     int responseMessageType(int requestMessageType) const final override;
@@ -910,3 +917,4 @@ protected:
 };
 
 } //      oes::common::etp12::Protocol
+

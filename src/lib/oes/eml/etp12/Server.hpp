@@ -19,6 +19,8 @@
 
 #include "Server.h"
 
+#include <oes/core/utils/Logger.h>
+
 namespace oes::eml::etp12 {
 
 //============================================================================
@@ -37,14 +39,10 @@ void handleException(proto12::EtpResponseHandler<T>& res_handler) {
         msg = "Server Error: TODO";
         errc = data12::ENOTSUPPORTED;
     } catch (const std::exception& ex) {
-        msg = "Server Error: Unexpected Exception: ";
-        msg += ex.what();
-
-        // trim trailing newlines
-        while (msg.back() == '\n') {
-            msg.resize(msg.size() - 1);
-        }
+        OES_ERROR("Unexpected exception while handling ETP request: {}", ex.what());
+        msg = "Server error";
     } catch (...) {
+        OES_ERROR("Unknown exception while handling ETP request");
         msg = "Server Error: Unknown Exception.";
     }
 
